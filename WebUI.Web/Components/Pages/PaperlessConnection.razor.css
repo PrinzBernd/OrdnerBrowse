@@ -1,0 +1,40 @@
+.token-setup {
+    max-width: 42rem;
+    margin: 0 auto;
+    padding: 2rem 1rem 3rem;
+}
+
+.token-field {
+    margin: 1rem 0;
+}
+
+.token-field label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-weight: 600;
+}
+
+.token-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+}
+
+.paperless-account {
+    display: grid;
+    gap: 0.25rem;
+    margin: 1.25rem 0;
+    padding: 1rem;
+    border: 1px solid #d5d9df;
+    border-radius: 0.75rem;
+    background: #fff;
+}
+
+.paperless-account span {
+    font-size: 0.9rem;
+}
+
+.paperless-account strong {
+    font-size: 1.1rem;
+}

@@ -1,0 +1,3915 @@
+@page "/documents"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using WebUI.Infrastructure
+@using System.Text.Json
+@using System.Diagnostics
+@using WebUI.Web.Services
+@inject PaperlessClientFactory ClientFactory
+@inject OidcAuthenticationSettings OidcSettings
+@inject IServiceProvider ServiceProvider
+@inject NavigationManager Navigation
+@inject NavigationCacheService NavigationCache
+@inject CentralNavigationSyncService CentralSync
+@inject DisplayPrefixService DisplayPrefixes
+@inject UserSessionRegistry UserSessions
+@inject CircuitConnectionState CircuitConnection
+@inject IJSRuntime JS
+@inject ILogger<Home> Logger
+@implements IAsyncDisposable
+
+<PageTitle>@ApplicationDisplayInfo.FullProductName</PageTitle>
+
+<div class="explorer">
+    <div class="toolbar">
+        <div class="toolbar-title" data-quick-look-anchor>
+            <strong>Dokumenten-Explorer</strong>
+        </div>
+
+        <div class="toolbar-status-row">
+            <span class="navigation-cache-status">@NavigationStatusText</span>
+            <button class="refresh-button"
+                    type="button"
+                    disabled="@(_isRefreshingNavigation || _navigationCacheKey is null)"
+                    @onclick="RefreshNavigationAsync">
+                @(_isRefreshingNavigation ? "Wird geprüft …" : "Aktualisieren")
+            </button>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(_errorMessage))
+    {
+        <div class="status error" role="alert">@_errorMessage</div>
+    }
+
+    <div class="columns" @ref="_columnsContainer">
+        <section data-column="area" class="column @CollapsedClass(_areasCollapsed)" tabindex="0" @onfocusin="CloseDocumentInspector" @onkeydown="HandleAreaKeyDownAsync">
+            @if (_areasCollapsed)
+            {
+                <button type="button" class="collapsed-rail" title="Bereiche wieder aufklappen" aria-label="Bereiche wieder aufklappen" aria-expanded="false" @onclick="ExpandAreas">
+                    <span>Bereiche</span><span class="column-expand-icon fold-chevron fold-chevron-right" aria-hidden="true"></span>
+                </button>
+            }
+            else
+            {
+                <header>
+                    <h2>Bereiche</h2>
+                    <div class="column-tools">
+                        <span>@NormalAreaCount</span>
+                        <button type="button" class="icon-button" title="Sortierreihenfolge wechseln" @onclick="ToggleAreaSort">@SortArrow(_areasDescending)</button>
+                        <button type="button" class="icon-button column-collapse-icon" title="Spalte einklappen" aria-label="Spalte einklappen" aria-expanded="true" disabled="@(_selectedArea is null)" @onclick="CollapseAreas"><span class="fold-chevron fold-chevron-left" aria-hidden="true"></span></button>
+                    </div>
+                </header>
+                <div class="items">
+                    <button type="button" class="row area-row @SelectedAreaClass(AllAreas)"
+                            aria-label="Gesamtübersicht auswählen" @onclick="() => SelectAreaAsync(AllAreas)">
+                        <span class="row-main">Gesamtübersicht</span>
+                        <span class="area-stats">
+                            <span class="area-stats-line">@FormatCorrespondentNumber(TotalCorrespondentCount)</span>
+                            <span class="area-stats-line">@FormatDocumentCount(TotalDocumentCount)</span>
+                        </span>
+                    </button>
+
+                    @foreach (var area in SortedAreas)
+                    {
+                        <button id="@AreaElementId(area)" class="row area-row @SelectedAreaClass(area)" @onclick="() => SelectAreaAsync(area)">
+                            <span class="row-main">@DisplayAreaName(area.DisplayName)</span>
+                            @if (area.StoragePathId == UnassignedAreaKey)
+                            {
+                                <span class="area-stats">
+                                    <span class="area-stats-line">@FormatCorrespondentNumber(GetAreaCorrespondentCount(area))</span>
+                                    <span class="area-stats-line">@FormatDocumentCount(GetAreaDocumentCount(area))</span>
+                                </span>
+                            }
+                            else
+                            {
+                                <span class="area-stats">
+                                    <span class="area-stats-line">@GetAreaCorrespondentCount(area).ToString("N0") Korrespondenten</span>
+                                    <span class="area-stats-line">@GetAreaDocumentCount(area).ToString("N0") Dokumente</span>
+                                </span>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(area.PaperlessName))
+                            {
+                                <span class="row-detail">@area.PaperlessName</span>
+                            }
+                            <span class="chevron">›</span>
+                        </button>
+                        @if (area.StoragePathId == UnassignedAreaKey)
+                        {
+                            <div class="special-separator" aria-hidden="true"></div>
+                        }
+                    }
+                </div>
+            }
+        </section>
+
+        <div class="main-column-resizer" data-column-resizer="0" title="Spaltenbreite mit der Maus ändern" aria-hidden="true"></div>
+
+        <section data-column="correspondent" class="column compact-text @CollapsedClass(_correspondentsCollapsed)" tabindex="0" @onfocusin="CloseDocumentInspector" @onkeydown="HandleCorrespondentKeyDownAsync">
+            @if (_correspondentsCollapsed)
+            {
+                <button type="button" class="collapsed-rail" title="Korrespondenten wieder aufklappen" aria-label="Korrespondenten wieder aufklappen" aria-expanded="false" @onclick="ExpandCorrespondents">
+                    <span>Korrespondenten</span><span class="column-expand-icon fold-chevron fold-chevron-right" aria-hidden="true"></span>
+                </button>
+            }
+            else
+            {
+                <header>
+                    <h2>Korrespondenten</h2>
+                    <div class="column-tools">
+                        @if (!_isLoadingArea && _selectedArea is not null)
+                        {
+                            <span>@FilteredCorrespondentCount</span>
+                        }
+                        <button type="button" class="icon-button" title="Sortierreihenfolge wechseln" @onclick="ToggleCorrespondentSort">@SortArrow(_correspondentsDescending)</button>
+                        <button type="button" class="icon-button column-collapse-icon" title="Spalte einklappen" aria-label="Spalte einklappen" aria-expanded="true" disabled="@(_selectedCorrespondent is null)" @onclick="CollapseCorrespondents"><span class="fold-chevron fold-chevron-left" aria-hidden="true"></span></button>
+                    </div>
+                </header>
+                @if (_selectedArea is null)
+                {
+                    <div class="empty-state"><strong>Bereich auswählen</strong></div>
+                }
+                else if (!_areInitialReferenceDataReady)
+                {
+                    <div class="empty-state" role="status">
+                        <strong>Korrespondenten werden geladen …</strong>
+                        <span>Die Navigation aus dem Cache ist bereits verfügbar.</span>
+                    </div>
+                }
+                else if (_isLoadingArea)
+                {
+                    <div class="empty-state" role="status">
+                        <strong>Korrespondenten werden aufgebaut …</strong>
+                        <span>@ProgressText</span>
+                        <progress max="100" value="@_progressPercent"></progress>
+                        <span>Es werden nur IDs gelesen; keine Titel oder OCR-Inhalte.</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="column-search">
+                        <input value="@_localFilter" @oninput="OnLocalFilterInput" @onkeydown:stopPropagation="true" placeholder="Korrespondenten filtern …" aria-label="Geladene Korrespondenten filtern" />
+                    </div>
+                    @if (FilteredCorrespondents.Count == 0)
+                    {
+                        <div class="empty-state"><strong>Keine Korrespondenten gefunden</strong></div>
+                    }
+                    else
+                    {
+                        <div class="items">
+                            @foreach (var correspondent in FilteredCorrespondents)
+                            {
+                                <button id="@CorrespondentElementId(correspondent)" class="row @SelectedCorrespondentClass(correspondent)" @onclick="() => SelectCorrespondent(correspondent)">
+                                    <span class="row-main">@DisplayCorrespondentName(correspondent.Name)</span>
+                                    <span class="row-subline">@FormatCorrespondentCount(correspondent)</span>
+                                    <span class="chevron">›</span>
+                                </button>
+                                @if (correspondent.Id == UnassignedSelectionId)
+                                {
+                                    <div class="special-separator" aria-hidden="true"></div>
+                                }
+                            }
+                        </div>
+                    }
+                }
+            }
+        </section>
+
+        <div class="main-column-resizer" data-column-resizer="1" title="Spaltenbreite mit der Maus ändern" aria-hidden="true"></div>
+
+        <section data-column="document-type" class="column compact-text @CollapsedClass(_documentTypesCollapsed)" tabindex="0" @onfocusin="CloseDocumentInspector" @onkeydown="HandleDocumentTypeKeyDownAsync">
+            @if (_documentTypesCollapsed)
+            {
+                <button type="button" class="collapsed-rail" title="Dokumenttypen wieder aufklappen" aria-label="Dokumenttypen wieder aufklappen" aria-expanded="false" @onclick="ExpandDocumentTypes">
+                    <span>Dokumenttypen</span><span class="column-expand-icon fold-chevron fold-chevron-right" aria-hidden="true"></span>
+                </button>
+            }
+            else
+            {
+                <header>
+                    <h2>Dokumenttypen</h2>
+                    <div class="column-tools">
+                        @if (_selectedCorrespondent is not null)
+                        {
+                            <span>@VisibleDocumentTypeCount</span>
+                        }
+                        <button type="button" class="icon-button" title="Sortierreihenfolge wechseln" @onclick="ToggleDocumentTypeSort">@SortArrow(_documentTypesDescending)</button>
+                        <button type="button" class="icon-button column-collapse-icon" title="Spalte einklappen" aria-label="Spalte einklappen" aria-expanded="true" disabled="@(_selectedDocumentType is null)" @onclick="CollapseDocumentTypes"><span class="fold-chevron fold-chevron-left" aria-hidden="true"></span></button>
+                    </div>
+                </header>
+                @if (_selectedCorrespondent is null)
+                {
+                    <div class="empty-state"><strong>Korrespondent auswählen</strong></div>
+                }
+                else if (!_areInitialReferenceDataReady)
+                {
+                    <div class="empty-state" role="status"><strong>Dokumenttypen werden geladen …</strong></div>
+                }
+                else if (_documentTypes.Count == 0)
+                {
+                    <div class="empty-state"><strong>Keine Dokumenttypen gefunden</strong></div>
+                }
+                else
+                {
+                    <div class="column-search">
+                        <input value="@_documentTypeFilter" @oninput="OnDocumentTypeFilterInput" @onkeydown:stopPropagation="true" placeholder="Dokumenttypen filtern …" aria-label="Dokumenttypen filtern" />
+                    </div>
+                    @if (FilteredDocumentTypes.Count == 0)
+                    {
+                        <div class="empty-state"><strong>Keine Dokumenttypen gefunden</strong></div>
+                    }
+                    else
+                    {
+                    <div class="items">
+                        @foreach (var documentType in FilteredDocumentTypes)
+                        {
+                            <button id="@DocumentTypeElementId(documentType)" class="row @SelectedDocumentTypeClass(documentType)" @onclick="() => LoadDocumentsAsync(documentType)">
+                                <span class="row-main">@DisplayDocumentTypeName(documentType.Name)</span>
+                                <span class="row-subline">@FormatDocumentCount(GetDocumentTypeDocumentCount(documentType))</span>
+                                <span class="chevron">›</span>
+                            </button>
+                            @if (documentType.Id == UnassignedSelectionId)
+                            {
+                                <div class="special-separator" aria-hidden="true"></div>
+                            }
+                        }
+                    </div>
+                    }
+                }
+            }
+        </section>
+
+        <div class="main-column-resizer" data-column-resizer="2" title="Spaltenbreite mit der Maus ändern" aria-hidden="true"></div>
+
+        <section data-column="document" class="column documents-column compact-text @(_documentInspectorOpen ? "inspector-open" : null)" tabindex="0" @ref="_documentsColumn" @onkeydown="HandleDocumentKeyDownAsync">
+            <header>
+                <h2>Dokumente</h2>
+                <div class="column-tools">
+                    @if (_selectedDocumentType is not null)
+                    {
+                        <span id="document-count">@_totalCount.ToString("N0")</span>
+                    }
+                    <button type="button" class="icon-button" title="Sortierreihenfolge wechseln" @onclick="ToggleDocumentSortAsync">@SortArrow(!_documentsAscending)</button>
+                    @if (_selectedDocument is not null)
+                    {
+                        <button type="button"
+                                class="icon-button preview-toggle-icon"
+                                title="@(_documentInspectorOpen ? "Vorschau schließen" : "Vorschau anzeigen")"
+                                aria-label="@(_documentInspectorOpen ? "Vorschau schließen" : "Vorschau anzeigen")"
+                                aria-expanded="@_documentInspectorOpen"
+                                @onclick="ToggleDocumentInspector">
+                            <span class="preview-chevron @(_documentInspectorOpen ? "preview-chevron-up" : "preview-chevron-down")" aria-hidden="true"></span>
+                        </button>
+                    }
+                </div>
+            </header>
+            @if (_selectedDocumentType is not null)
+            {
+                <div class="column-search document-search-shell">
+                    <input id="document-search-input"
+                           @ref="_documentSearchInput"
+                           value="@_documentFilter"
+                           @oninput="OnDocumentSearchInputAsync"
+                           @onkeydown:stopPropagation="true"
+                           placeholder="Dokumenttitel suchen …"
+                           aria-label="Dokumenttitel im ausgewählten Bereich suchen"
+                           aria-busy="@_isSearchingDocuments" />
+                    <span class="document-search-runtime" aria-live="polite">@(_isSearchingDocuments ? "Suche läuft …" : string.Empty)</span>
+                </div>
+            }
+            @if (_isLoadingDocuments)
+            {
+                <div class="empty-state" role="status"><strong>Dokumente werden geladen …</strong></div>
+            }
+            else if (_selectedDocumentType is null)
+            {
+                <div class="empty-state"><strong>Dokumenttyp auswählen</strong></div>
+            }
+            else
+            {
+                <div class="items documents-scroll" @ref="_documentsScrollContainer" aria-live="polite">
+                    @if (_documents.Count == 0)
+                    {
+                        <div class="empty-state"><strong>Keine Dokumente gefunden</strong></div>
+                    }
+                    else
+                    {
+                        @foreach (var document in _documents)
+                        {
+                            <div class="document-row-shell @(SelectedDocumentClass(document))" @key="document.Id">
+                                <button type="button"
+                                        id="@DocumentElementId(document)"
+                                        class="row document-row"
+                                        @onclick="() => SelectDocumentAsync(document)">
+                                    <span class="row-main">@DisplayDocumentName(document.Title)</span>
+                                    <span class="row-detail">ID @document.Id · @(document.PageCount?.ToString() ?? "–") Seite(n) · @document.TagIds.Count Tag(s)</span>
+                                </button>
+                                @if (_selectedDocument?.Id == document.Id)
+                                {
+                                    <button type="button"
+                                            class="quick-look-row-button"
+                                            title="Schnellansicht öffnen"
+                                            aria-label="Schnellansicht öffnen"
+                                            @onclick="OpenQuickLook">
+                                        <svg class="quick-look-eye" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.8"></circle></svg>
+                                    </button>
+                                    <a class="paperless-edit-link"
+                                       href="@GetPaperlessDocumentUrl(document.Id)"
+                                       target="_blank"
+                                       rel="noopener noreferrer"
+                                       data-tooltip="In paperless-ngx öffnen"
+                                       aria-label="In paperless-ngx öffnen">
+                                        <img src="images/open-in-paperless.svg" alt="" />
+                                    </a>
+                                }
+                            </div>
+                        }
+                    }
+                </div>
+
+                @if (!_documentInspectorOpen &&
+                     string.IsNullOrWhiteSpace(_documentFilter) &&
+                     _documents.Count > 0)
+                {
+                    <div class="document-load-footer" role="status" aria-live="polite">
+                        @if (_hasMoreDocuments)
+                        {
+                            <span>
+                                @_allDocumentsForCurrentSelection.Count.ToString("N0") Dokumente von @_normalDocumentTotalCount.ToString("N0") geladen …
+                            </span>
+                        }
+                        else
+                        {
+                            <span>Alle @_normalDocumentTotalCount.ToString("N0") Dokumente geladen</span>
+                        }
+                    </div>
+                }
+            }
+
+            @if (_selectedDocument is not null && _documentInspectorOpen)
+            {
+                var selectedCustomFields = GetSelectedDocumentCustomFields();
+                var selectedTags = GetSelectedDocumentTags();
+                var hasDocumentSideDetails = selectedCustomFields.Count > 0 || selectedTags.Count > 0;
+
+                <div class="document-inspector">
+                    <div class="document-detail-top @(hasDocumentSideDetails ? "has-side-details" : "preview-only")" @ref="_documentDetailTop">
+                        <section class="document-preview" aria-label="Dokumentvorschau">
+                            <header>
+                                <h2>Vorschau</h2>
+                            </header>
+
+                            @if (_thumbnailFailed)
+                            {
+                                <div class="document-preview-state">Für dieses Dokument ist keine Vorschau verfügbar.</div>
+                            }
+                            else
+                            {
+                                <div class="document-preview-frame" @ref="_documentPreviewFrame">
+                                    <button type="button"
+                                            class="document-preview-image-button"
+                                            title="Schnellansicht öffnen"
+                                            aria-label="Schnellansicht öffnen"
+                                            @onclick="OpenQuickLook">
+                                        <img @key="_selectedDocument.Id"
+                                             @ref="_documentPreviewImage"
+                                             src="@GetThumbnailUrl(_selectedDocument.Id)"
+                                             alt="Vorschau des ausgewählten Dokuments"
+                                             @onerror="HandleThumbnailError" />
+                                    </button>
+                                    <div class="preview-resize-handle"
+                                         @ref="_documentPreviewResizeHandle"
+                                         title="Vorschauhöhe mit der Maus ändern"
+                                         aria-label="Vorschauhöhe mit der Maus ändern"></div>
+                                </div>
+                            }
+                        </section>
+
+                        @if (hasDocumentSideDetails)
+                        {
+                            <div class="document-detail-side">
+                                @if (selectedCustomFields.Count > 0)
+                                {
+                                    <section class="document-custom-fields" aria-label="Benutzerdefinierte Felder des Dokuments">
+                                        <header>
+                                            <h2>Benutzerdefinierte Felder</h2>
+                                        </header>
+
+                                        <dl class="custom-fields-grid">
+                                            @foreach (var field in selectedCustomFields)
+                                            {
+                                                <div>
+                                                    <dt>@field.Name</dt>
+                                                    @if (field.IsEmpty)
+                                                    {
+                                                        <dd class="custom-field-empty">leer</dd>
+                                                    }
+                                                    else
+                                                    {
+                                                        <dd>@field.DisplayValue</dd>
+                                                    }
+                                                </div>
+                                            }
+                                        </dl>
+                                    </section>
+                                }
+
+                                @if (selectedTags.Count > 0)
+                                {
+                                    <section class="document-tags" aria-label="Tags des Dokuments">
+                                        <header>
+                                            <h2>Tags</h2>
+                                        </header>
+
+                                        <div class="document-tags-list">
+                                            @foreach (var tag in selectedTags)
+                                            {
+                                                <span class="document-tag"
+                                                      style="@GetTagStyle(tag)"
+                                                      title="@tag.Name">@tag.Name</span>
+                                            }
+                                        </div>
+                                    </section>
+                                }
+                            </div>
+                        }
+                    </div>
+
+                    <section class="document-details" aria-label="Dokumentdetails">
+                        <header>
+                            <h2>Metadaten</h2>
+                        </header>
+
+                        @if (_isLoadingDocumentDetails)
+                        {
+                            <div class="document-details-state" role="status">Metadaten werden geladen …</div>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(_documentDetailsError))
+                        {
+                            <div class="document-details-state error" role="alert">@_documentDetailsError</div>
+                        }
+                        else if (_documentDetails is not null)
+                        {
+                            <dl class="metadata-grid">
+                                <div><dt>Titel</dt><dd>@DisplayMetadataValue(_documentDetails.Title)</dd></div>
+                                <div><dt>Korrespondent</dt><dd>@GetCorrespondentName(_documentDetails.CorrespondentId)</dd></div>
+                                <div><dt>Dokumenttyp</dt><dd>@GetDocumentTypeName(_documentDetails.DocumentTypeId)</dd></div>
+                                <div><dt>Bereich</dt><dd>@GetStoragePathName(_documentDetails.StoragePathId)</dd></div>
+                                <div><dt>Erstellt</dt><dd>@FormatMetadataDate(_documentDetails.CreatedUtc)</dd></div>
+                                <div><dt>Hinzugefügt</dt><dd>@FormatMetadataDate(_documentDetails.AddedUtc)</dd></div>
+                                <div><dt>Geändert</dt><dd>@FormatMetadataDate(_documentDetails.ModifiedUtc)</dd></div>
+                                <div><dt>Seiten</dt><dd>@(_documentDetails.PageCount?.ToString("N0") ?? "–")</dd></div>
+                                <div><dt>Dateityp</dt><dd>@DisplayMetadataValue(_documentDetails.MimeType)</dd></div>
+                                <div><dt>Originaldatei</dt><dd>@DisplayMetadataValue(_documentDetails.OriginalFileName)</dd></div>
+                                <div><dt>Archivnummer</dt><dd>@(_documentDetails.ArchiveSerialNumber?.ToString("N0") ?? "–")</dd></div>
+                                <div><dt>Dokument-ID</dt><dd>@_documentDetails.Id</dd></div>
+                            </dl>
+
+                            @if (_documentDetails.Notes.Any(note => !string.IsNullOrWhiteSpace(note.Note)))
+                            {
+                                <header>
+                                    <h2>Notizen</h2>
+                                </header>
+
+                                @foreach (var note in _documentDetails.Notes.Where(note => !string.IsNullOrWhiteSpace(note.Note)))
+                                {
+                                    <article class="quick-look-note">
+                                        <div class="quick-look-note-text">@note.Note</div>
+                                        <div class="quick-look-note-info">@FormatQuickLookNoteInfo(note)</div>
+                                    </article>
+                                }
+                            }
+                        }
+                    </section>
+                </div>
+            }
+        </section>
+    </div>
+
+    <footer class="statusbar">
+        <div class="footer-selection" aria-label="Aktuelle Ablageauswahl">
+            <span class="footer-path footer-path-full">
+                @if (_selectedArea is not null)
+                {
+                    <span>@DisplayAreaName(_selectedArea.DisplayName)</span>
+                }
+                @if (_selectedCorrespondent is not null)
+                {
+                    <span class="footer-separator"> › </span><span>@DisplayCorrespondentName(_selectedCorrespondent.Name)</span>
+                }
+                @if (_selectedDocumentType is not null)
+                {
+                    <span class="footer-separator"> › </span><span>@DisplayDocumentTypeName(_selectedDocumentType.Name)</span>
+                }
+            </span>
+
+            <span class="footer-path footer-path-no-area" aria-hidden="true">
+                <span>…</span>
+                @if (_selectedCorrespondent is not null)
+                {
+                    <span class="footer-separator"> › </span><span>@DisplayCorrespondentName(_selectedCorrespondent.Name)</span>
+                }
+                @if (_selectedDocumentType is not null)
+                {
+                    <span class="footer-separator"> › </span><span>@DisplayDocumentTypeName(_selectedDocumentType.Name)</span>
+                }
+            </span>
+
+            <span class="footer-path footer-path-type-only" aria-hidden="true">
+                <span>…</span>
+                @if (_selectedDocumentType is not null)
+                {
+                    <span class="footer-separator"> › </span><span>@DisplayDocumentTypeName(_selectedDocumentType.Name)</span>
+                }
+            </span>
+
+            <span class="footer-count">@FooterSelectionCountText</span>
+        </div>
+        <span class="footer-system">@PaperlessFooterText</span>
+    </footer>
+</div>
+
+@if (_quickLookOpen && _selectedDocument is not null)
+{
+    var quickLookFields = GetSelectedDocumentCustomFields();
+    var quickLookTags = GetSelectedDocumentTags();
+
+    <div class="quick-look-backdrop"
+         role="presentation"
+         @onclick="CloseQuickLook">
+        <section class="quick-look-dialog"
+                 role="dialog"
+                 aria-modal="true"
+                 aria-label="Schnellansicht des ausgewählten Dokuments"
+                 tabindex="-1"
+                 @ref="_quickLookDialog"
+                 @onclick:stopPropagation="true"
+                 @onkeydown="HandleQuickLookKeyDown">
+            <header class="quick-look-header" data-quick-look-drag-handle>
+                <h2>Schnellansicht</h2>
+                <button type="button"
+                        class="quick-look-close"
+                        title="Schnellansicht schließen"
+                        aria-label="Schnellansicht schließen"
+                        @onclick="CloseQuickLook">×</button>
+            </header>
+
+            <div class="quick-look-content" @ref="_quickLookContent">
+                <div class="quick-look-divider"
+                     @ref="_quickLookDivider"
+                     title="Größe des Informationsbereichs ändern"
+                     aria-label="Größe des Informationsbereichs ändern"></div>
+                <div class="quick-look-preview">
+                    <div class="quick-look-pdf-viewer"
+                         @ref="_quickLookPdfViewer"
+                         role="region"
+                         aria-label="Mehrseitige Vorschau des ausgewählten Dokuments"></div>
+                </div>
+
+                <aside class="quick-look-information">
+                    @if (quickLookFields.Count > 0)
+                    {
+                        <section class="quick-look-section">
+                            <h3>Benutzerdefinierte Felder</h3>
+                            <dl class="quick-look-fields">
+                                @foreach (var field in quickLookFields)
+                                {
+                                    <div>
+                                        <dt>@field.Name</dt>
+                                        <dd class="@(field.IsEmpty ? "custom-field-empty" : null)">@(field.IsEmpty ? "leer" : field.DisplayValue)</dd>
+                                    </div>
+                                }
+                            </dl>
+                        </section>
+                    }
+
+                    @if (quickLookTags.Count > 0)
+                    {
+                        <section class="quick-look-section">
+                            <h3>Tags</h3>
+                            <div class="document-tags-list quick-look-tags">
+                                @foreach (var tag in quickLookTags)
+                                {
+                                    <span class="document-tag" style="@GetTagStyle(tag)" title="@tag.Name">@tag.Name</span>
+                                }
+                            </div>
+                        </section>
+                    }
+
+                    <section class="quick-look-section">
+                        <h3>Metadaten</h3>
+                        @if (_isLoadingDocumentDetails)
+                        {
+                            <div class="quick-look-state" role="status">Metadaten werden geladen …</div>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(_documentDetailsError))
+                        {
+                            <div class="quick-look-state error" role="alert">@_documentDetailsError</div>
+                        }
+                        else if (_documentDetails is not null)
+                        {
+                            <dl class="quick-look-metadata">
+                                <div><dt>Titel</dt><dd>@DisplayMetadataValue(_documentDetails.Title)</dd></div>
+                                <div><dt>Korrespondent</dt><dd>@GetCorrespondentName(_documentDetails.CorrespondentId)</dd></div>
+                                <div><dt>Dokumenttyp</dt><dd>@GetDocumentTypeName(_documentDetails.DocumentTypeId)</dd></div>
+                                <div><dt>Bereich</dt><dd>@GetStoragePathName(_documentDetails.StoragePathId)</dd></div>
+                                <div><dt>Erstellt</dt><dd>@FormatMetadataDate(_documentDetails.CreatedUtc)</dd></div>
+                                <div><dt>Geändert</dt><dd>@FormatMetadataDate(_documentDetails.ModifiedUtc)</dd></div>
+                                <div><dt>Seiten</dt><dd>@(_documentDetails.PageCount?.ToString("N0") ?? "–")</dd></div>
+                                <div><dt>Dateityp</dt><dd>@DisplayMetadataValue(_documentDetails.MimeType)</dd></div>
+                                <div><dt>Originaldatei</dt><dd>@DisplayMetadataValue(_documentDetails.OriginalFileName)</dd></div>
+                                <div><dt>Dokument-ID</dt><dd>@_documentDetails.Id</dd></div>
+                            </dl>
+                        }
+                    </section>
+
+                    @if (_documentDetails is not null &&
+                         _documentDetails.Notes.Any(note => !string.IsNullOrWhiteSpace(note.Note)))
+                    {
+                        <section class="quick-look-section">
+                            <h3>Notizen</h3>
+                            <div class="quick-look-notes">
+                                @foreach (var note in _documentDetails.Notes.Where(note => !string.IsNullOrWhiteSpace(note.Note)))
+                                {
+                                    <article class="quick-look-note">
+                                        <div class="quick-look-note-text">@note.Note</div>
+                                        <div class="quick-look-note-info">@FormatQuickLookNoteInfo(note)</div>
+                                    </article>
+                                }
+                            </div>
+                        </section>
+                    }
+                </aside>
+            </div>
+            <div class="quick-look-resize-handle quick-look-resize-n" data-quick-look-resize="n" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-e" data-quick-look-resize="e" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-s" data-quick-look-resize="s" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-w" data-quick-look-resize="w" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-ne" data-quick-look-resize="ne" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-se" data-quick-look-resize="se" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-sw" data-quick-look-resize="sw" aria-hidden="true"></div>
+            <div class="quick-look-resize-handle quick-look-resize-nw" data-quick-look-resize="nw" aria-hidden="true"></div>
+        </section>
+    </div>
+}
+
+
+<style>
+    .columns { display: flex !important; min-width: 0; }
+    .column { flex: .85 1 0; min-width: 0; }
+    .documents-column {
+        flex: 2.45 1 0;
+        display: flex;
+        flex-direction: column;
+    }
+    .documents-column > header {
+        order: 0;
+        flex: 0 0 auto;
+    }
+    .documents-column > .document-search-shell {
+        order: 1;
+        flex: 0 0 auto;
+        margin-top: 0;
+    }
+    .documents-column > .empty-state,
+    .documents-column > .documents-scroll {
+        order: 2;
+        min-height: 0;
+    }
+    .documents-column > .documents-scroll {
+        flex: 1 1 8rem;
+    }
+    .documents-column > .document-load-footer {
+        order: 3;
+    }
+    .documents-column > .document-inspector {
+        order: 4;
+    }
+    .column.compact-text .row-main { font-size: 0.86rem; font-weight: 400; }
+    .column.compact-text .row-detail { font-size: 0.72rem; font-weight: 400; }
+    .column.compact-text .row.selected .row-main { font-weight: 600; }
+    .column-tools { display: flex; align-items: center; gap: .35rem; margin-left: auto; }
+    .icon-button { border: 0; background: transparent; padding: .15rem .3rem; min-width: 1.65rem; cursor: pointer; font-size: .9rem; border-radius: .3rem; }
+    .icon-button:hover, .icon-button:focus-visible { background: rgba(127,127,127,.16); outline: none; }
+    .icon-button:disabled { opacity: .28; cursor: default; background: transparent; }
+    .row-subline { display: block; width: 100%; margin-top: .16rem; font-size: .74rem; line-height: 1.2; font-variant-numeric: tabular-nums; opacity: .72; text-align: left; }
+    .row.selected .row-subline { opacity: .95; }
+    .document-row-shell { position: relative; display: flex; align-items: stretch; }
+    .document-row-shell .document-row { flex: 1 1 auto; min-width: 0; padding-right: 5rem; }
+    .document-row-shell.selected .document-row { background: var(--bs-primary, #356ac3); color: white; }
+    .paperless-edit-link { position: absolute; z-index: 2; right: .45rem; top: 50%; transform: translateY(-50%); width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: .4rem; background: rgba(255,255,255,.14); }
+    .paperless-edit-link:hover, .paperless-edit-link:focus-visible { background: rgba(255,255,255,.28); outline: 2px solid currentColor; outline-offset: 1px; }
+    .paperless-edit-link::after { content: attr(data-tooltip); position: absolute; right: calc(100% + .5rem); top: 50%; transform: translateY(-50%); z-index: 20; padding: .3rem .5rem; border-radius: .3rem; background: rgba(20,24,31,.96); color: white; font-size: .72rem; font-weight: 500; line-height: 1.2; white-space: nowrap; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s ease; }
+    .paperless-edit-link:hover::after, .paperless-edit-link:focus-visible::after { opacity: 1; visibility: visible; }
+    .paperless-edit-link img { width: 1.35rem; height: 1.35rem; object-fit: contain; display: block; }
+    .special-separator { height: 1px; background: rgba(127,127,127,.28); margin: .2rem .55rem .35rem; }
+    .column { border: 2px solid transparent; border-radius: .45rem; }
+    .column:focus-within { border-color: color-mix(in srgb, var(--bs-primary, #356ac3) 75%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bs-primary, #356ac3) 20%, transparent); }
+    .row:focus-visible, .document-row:focus-visible { outline: 2px solid var(--bs-primary, #356ac3); outline-offset: -2px; }
+    .area-overview { margin: 0 .55rem .45rem; padding: .42rem .55rem; display: flex; flex-direction: column; gap: .08rem; background: transparent; border-radius: .35rem; color: var(--bs-secondary-color, #667085); font-size: .72rem; line-height: 1.2; font-variant-numeric: tabular-nums; }
+    .area-row .area-stats { display: block; margin-top: .18rem; font-size: .72rem; line-height: 1.25; color: var(--bs-secondary-color, #667085); font-variant-numeric: tabular-nums; }
+    .area-row.selected .area-stats { color: inherit; opacity: .9; }
+    .column.collapsed { flex: 0 0 3rem !important; min-width: 3rem !important; padding: 0; overflow: visible; }
+    .collapsed-rail { width: 100%; height: 100%; min-height: 12rem; border: 0; background: transparent; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: .6rem; padding: .7rem .25rem; cursor: pointer; border-radius: .35rem; }
+    .collapsed-rail span:first-child { writing-mode: vertical-rl; transform: rotate(180deg); font-weight: 600; }
+    .collapsed-rail:hover, .collapsed-rail:focus-visible { background: rgba(127,127,127,.14); outline: 2px solid var(--bs-primary, #356ac3); outline-offset: -2px; }
+</style>
+
+@code {
+    private const int UnassignedAreaKey = 0;
+    private const int AllAreaKey = -1;
+    private const int PrivateAreaKey = -3;
+    private const int AllSelectionId = -1;
+    private const int UnassignedSelectionId = -2;
+    private const int PrivateSelectionId = -3;
+
+    private AreaDefinition[] _areas =
+    [
+        new(UnassignedAreaKey, "Nicht zugewiesen", "ohne Speicherpfad")
+    ];
+
+    private static readonly AreaDefinition AllAreas =
+        new(AllAreaKey, "Gesamtübersicht", string.Empty);
+
+    private static readonly AreaDefinition PrivateArea =
+        new(PrivateAreaKey, "Privat", string.Empty);
+
+    private static readonly CorrespondentDto AllCorrespondents = new()
+    {
+        Id = AllSelectionId,
+        Name = "Alle"
+    };
+
+    private static readonly CorrespondentDto UnassignedCorrespondent = new()
+    {
+        Id = UnassignedSelectionId,
+        Name = "Nicht zugewiesen"
+    };
+
+    private static readonly CorrespondentDto PrivateCorrespondent = new()
+    {
+        Id = PrivateSelectionId,
+        Name = "Privat"
+    };
+
+    private static readonly DocumentTypeDto AllDocumentTypes = new()
+    {
+        Id = AllSelectionId,
+        Name = "Alle"
+    };
+
+    private static readonly DocumentTypeDto UnassignedDocumentType = new()
+    {
+        Id = UnassignedSelectionId,
+        Name = "Nicht zugewiesen"
+    };
+
+    private static readonly DocumentTypeDto PrivateDocumentType = new()
+    {
+        Id = PrivateSelectionId,
+        Name = "Privat"
+    };
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        int, AreaNavigationIndexDto> _areaCache = new();
+
+    private readonly string _performanceDiagnosticRunId = PerformanceDiagnosticsLog.CreateRunId();
+    private PaperlessApiClient? _paperlessClient;
+    private string? _sessionId;
+    private string? _navigationCacheKey;
+    private string? _paperlessBaseUrl;
+    private NavigationCacheSnapshot? _navigationSnapshot;
+    private Task<NavigationRefreshResult>? _initialNavigationTask;
+    private bool _isRefreshingNavigation;
+    private string _navigationStatus = "Navigation wird vorbereitet …";
+
+    private IDisposable? _centralSyncRegistration;
+    private static readonly TimeSpan TrashCheckInterval = TimeSpan.FromSeconds(15);
+    private DateTimeOffset _nextTrashCheckUtc = DateTimeOffset.MinValue;
+    private IReadOnlySet<int> _knownTrashDocumentIds = new HashSet<int>();
+
+    private string _typeAheadBuffer = string.Empty;
+    private DateTimeOffset _lastTypeAheadInput = DateTimeOffset.MinValue;
+    private static readonly TimeSpan TypeAheadTimeout = TimeSpan.FromMilliseconds(700);
+
+    private bool _areasDescending;
+    private bool _correspondentsDescending;
+    private bool _documentTypesDescending;
+    private bool _documentsAscending;
+    private bool _areasCollapsed;
+    private bool _correspondentsCollapsed;
+    private bool _documentTypesCollapsed;
+    private DocumentListItemDto? _selectedDocument;
+    private DocumentDetailsDto? _documentDetails;
+    private CancellationTokenSource? _documentDetailsCancellation;
+    private bool _isLoadingDocumentDetails;
+    private string? _documentDetailsError;
+    private bool _thumbnailFailed;
+    private bool _documentInspectorOpen;
+    private bool _quickLookOpen;
+    private bool _quickLookNeedsFocus;
+    private ElementReference _quickLookDialog;
+    private ElementReference _quickLookContent;
+    private ElementReference _quickLookDivider;
+    private ElementReference _quickLookPdfViewer;
+    private DateTimeOffset? _syncStartedAt;
+    private int _syncElapsedSeconds;
+    private CancellationTokenSource? _syncStatusCancellation;
+    private Task? _syncStatusTask;
+
+    private AreaDefinition? _selectedArea;
+    private CorrespondentDto? _selectedCorrespondent;
+    private DocumentTypeDto? _selectedDocumentType;
+    private AreaNavigationIndexDto? _currentIndex;
+
+    private IReadOnlyList<CorrespondentDto> _allCorrespondents = [];
+    private IReadOnlyList<DocumentTypeDto> _allDocumentTypes = [];
+    private IReadOnlyList<TagDto> _allTags = [];
+    private IReadOnlyList<CustomFieldDto> _allCustomFields = [];
+    private string? _paperlessVersion;
+    private IReadOnlyList<CorrespondentDto> _areaCorrespondents = [];
+    private IReadOnlyList<DocumentTypeDto> _documentTypes = [];
+    private IReadOnlyList<DocumentListItemDto> _documents = [];
+    private IReadOnlyList<DocumentListItemDto> _allDocumentsForCurrentSelection = [];
+
+    private string _localFilter = string.Empty;
+    private string _documentTypeFilter = string.Empty;
+    private string _documentFilter = string.Empty;
+    private int _documentSearchVersion;
+    private CancellationTokenSource? _hybridDocumentSearchCancellation;
+    private IReadOnlyList<DocumentListItemDto> _activeDocumentSearchResults = [];
+    private bool _isSearchingDocuments;
+    private int _normalDocumentTotalCount;
+    private bool _normalDocumentsAscending;
+    private Dictionary<int, DocumentListItemDto> _documentsById = new();
+    private int _progressPercent;
+    private int _loadedDocuments;
+    private int _totalDocumentsToLoad;
+    private const int DocumentsPerBatch = 20;
+
+    private ElementReference _documentsColumn;
+    private ElementReference _documentsScrollContainer;
+    private ElementReference _documentSearchInput;
+    private ElementReference _documentDetailTop;
+    private ElementReference _documentPreviewFrame;
+    private ElementReference _documentPreviewImage;
+    private ElementReference _documentPreviewResizeHandle;
+    private ElementReference _columnsContainer;
+    private IJSObjectReference? _infiniteScrollModule;
+    private IJSObjectReference? _listNavigationModule;
+    private IJSObjectReference? _previewResizeModule;
+    private IJSObjectReference? _quickLookResizeModule;
+    private IJSObjectReference? _quickLookPdfModule;
+    private IJSObjectReference? _columnResizeModule;
+    private IJSObjectReference? _documentLoadFooterModule;
+    private DotNetObjectReference<Home>? _dotNetReference;
+    private string? _columnToFocusAfterRender;
+
+    private int _documentPage = 1;
+    private int _totalCount;
+    private bool _hasMoreDocuments;
+    private bool _isLoadingMoreDocuments;
+    private bool _isLoadingArea;
+    private bool _areInitialReferenceDataReady;
+    private bool _isLoadingDocuments;
+    private string? _errorMessage;
+
+    private IReadOnlyList<AreaDefinition> SortedAreas =>
+        [
+            _areas[0],
+            .. (_areasDescending
+                ? _areas.Skip(1).OrderByDescending(area => DisplayAreaName(area.DisplayName), StringComparer.CurrentCultureIgnoreCase)
+                : _areas.Skip(1).OrderBy(area => DisplayAreaName(area.DisplayName), StringComparer.CurrentCultureIgnoreCase))
+        ];
+
+    private IReadOnlyList<CorrespondentDto> FilteredCorrespondents
+    {
+        get
+        {
+            var filtered = string.IsNullOrWhiteSpace(_localFilter)
+                ? _areaCorrespondents
+                : _areaCorrespondents.Where(item => DisplayCorrespondentName(item.Name).Contains(
+                    _localFilter.Trim(), StringComparison.CurrentCultureIgnoreCase)).ToArray();
+            var fixedEntries = filtered
+                .Where(item => item.Id == AllSelectionId || item.Id == UnassignedSelectionId)
+                .OrderByDescending(item => item.Id)
+                .ToArray();
+            var sortable = filtered.Where(item => item.Id > 0 || item.Id == PrivateSelectionId);
+            sortable = _correspondentsDescending
+                ? sortable.OrderByDescending(item => DisplayCorrespondentName(item.Name))
+                : sortable.OrderBy(item => DisplayCorrespondentName(item.Name));
+            return [.. fixedEntries, .. sortable];
+        }
+    }
+
+    private int FilteredCorrespondentCount =>
+        FilteredCorrespondents.Count(item => item.Id > 0 || item.Id == PrivateSelectionId);
+
+    private IReadOnlyList<DocumentTypeDto> FilteredDocumentTypes
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(_documentTypeFilter))
+            {
+                return SortedDocumentTypes;
+            }
+
+            var filter = _documentTypeFilter.Trim();
+            return SortedDocumentTypes
+                .Where(item => DisplayDocumentTypeName(item.Name).Contains(
+                    filter,
+                    StringComparison.CurrentCultureIgnoreCase))
+                .ToArray();
+        }
+    }
+
+    private int VisibleDocumentTypeCount =>
+        FilteredDocumentTypes.Count(item => item.Id > 0 || item.Id == PrivateSelectionId);
+
+    private int NormalAreaCount =>
+        _areas.Count(area => area.StoragePathId != UnassignedAreaKey);
+
+    private int TotalDocumentCount =>
+        _navigationSnapshot?.Documents.Count ?? 0;
+
+    private int TotalCorrespondentCount =>
+        _navigationSnapshot?.Documents
+            .Where(document => document.CorrespondentId.HasValue)
+            .Select(document => document.CorrespondentId!.Value)
+            .Distinct()
+            .Count() ?? 0;
+
+    private IReadOnlyList<DocumentTypeDto> SortedDocumentTypes
+    {
+        get
+        {
+            var fixedEntries = _documentTypes
+                .Where(item => item.Id == AllSelectionId || item.Id == UnassignedSelectionId)
+                .OrderByDescending(item => item.Id)
+                .ToArray();
+            var sortable = _documentTypes.Where(item => item.Id > 0 || item.Id == PrivateSelectionId);
+            sortable = _documentTypesDescending
+                ? sortable.OrderByDescending(item => DisplayDocumentTypeName(item.Name))
+                : sortable.OrderBy(item => DisplayDocumentTypeName(item.Name));
+            return [.. fixedEntries, .. sortable];
+        }
+    }
+
+    private string ProgressText =>
+        _totalDocumentsToLoad <= 0
+            ? "Struktur wird vorbereitet …"
+            : $"{_loadedDocuments:N0} von {_totalDocumentsToLoad:N0} Dokumenten geprüft · {_progressPercent}%";
+
+    private string PaperlessFooterText =>
+        string.IsNullOrWhiteSpace(_paperlessVersion)
+            ? "paperless-ngx · nur lesend"
+            : $"paperless-ngx · v{_paperlessVersion} · nur lesend";
+
+    private string StatusText =>
+        _selectedArea is null
+            ? "Bereit"
+            : _isLoadingArea
+                ? $"{DisplayAreaName(_selectedArea.DisplayName)}: {_progressPercent}%"
+                : _selectedCorrespondent is null
+                    ? $"{DisplayAreaName(_selectedArea.DisplayName)}: {_areaCorrespondents.Count(item => item.Id > 0):N0} Korrespondenten"
+                    : _selectedDocumentType is null
+                        ? $"{DisplayCorrespondentName(_selectedCorrespondent.Name)}: {_documentTypes.Count(item => item.Id > 0):N0} Dokumenttypen"
+                        : $"{DisplayDocumentTypeName(_selectedDocumentType.Name)}: {_totalCount:N0} Dokumente";
+
+    private string FooterSelectionCountText =>
+        _selectedArea is null
+            ? "Bereit"
+            : _isLoadingArea
+                ? $"· {_progressPercent}%"
+                : _selectedCorrespondent is null
+                    ? $"· {_areaCorrespondents.Count(item => item.Id > 0):N0} Korrespondenten"
+                    : _selectedDocumentType is null
+                        ? $"· {_documentTypes.Count(item => item.Id > 0):N0} Dokumenttypen"
+                        : $"· {_totalCount:N0} Dokumente";
+
+    private async Task<T> MeasurePerformanceAsync<T>(
+        string dataClass,
+        string operation,
+        Func<Task<T>> action,
+        Func<T, string>? details = null)
+    {
+        var watch = Stopwatch.StartNew();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, dataClass, operation, "START", 0);
+        try
+        {
+            var result = await action();
+            watch.Stop();
+            PerformanceDiagnosticsLog.Write(
+                _performanceDiagnosticRunId,
+                dataClass,
+                operation,
+                "OK",
+                watch.Elapsed.TotalMilliseconds,
+                details?.Invoke(result));
+            return result;
+        }
+        catch (Exception exception)
+        {
+            watch.Stop();
+            PerformanceDiagnosticsLog.WriteFailure(
+                _performanceDiagnosticRunId,
+                dataClass,
+                operation,
+                watch.Elapsed.TotalMilliseconds,
+                exception);
+            throw;
+        }
+    }
+
+    private async Task<IJSObjectReference> ImportPerformanceModuleAsync(
+        string operation,
+        string path)
+    {
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var module = await JS.InvokeAsync<IJSObjectReference>("import", path);
+            watch.Stop();
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "RENDER", operation, "OK", watch.Elapsed.TotalMilliseconds);
+            return module;
+        }
+        catch (Exception exception)
+        {
+            watch.Stop();
+            PerformanceDiagnosticsLog.WriteFailure(_performanceDiagnosticRunId, "RENDER", operation, watch.Elapsed.TotalMilliseconds, exception);
+            throw;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        DisplayPrefixes.Changed += HandleDisplayPrefixesChanged;
+
+        TaskCompletionSource<NavigationRefreshResult>? initialNavigationCompletion = null;
+        var initializationWatch = Stopwatch.StartNew();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "INITIALIZE", "START", 0);
+        try
+        {
+            if (OidcSettings.Enabled)
+            {
+                var tokenStore =
+                    ServiceProvider.GetService<ProtectedUserPaperlessTokenStore>();
+
+                if (tokenStore is null ||
+                    !(await tokenStore.GetStatusAsync()).IsConfigured)
+                {
+                    Navigation.NavigateTo("/", replace: true);
+                    return;
+                }
+            }
+
+            var contextWatch = Stopwatch.StartNew();
+            var context = await ClientFactory.CreateContextAsync();
+            contextWatch.Stop();
+            _paperlessClient = context.Client;
+            _paperlessClient.DiagnosticRunId = _performanceDiagnosticRunId;
+            _sessionId = context.SessionId;
+            _navigationCacheKey = context.CacheKey;
+            _paperlessBaseUrl = context.BaseUrl;
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "CLIENT_CONTEXT", "OK", contextWatch.Elapsed.TotalMilliseconds);
+
+            var correspondentsTask = MeasurePerformanceAsync(
+                "REF", "CORRESPONDENTS_INITIAL", () => context.Client.GetCorrespondentsAsync(), result => $"count={result.Count}");
+
+            var documentTypesTask = MeasurePerformanceAsync(
+                "REF", "DOCUMENT_TYPES_INITIAL", () => context.Client.GetDocumentTypesAsync(), result => $"count={result.Count}");
+
+            var tagsTask = MeasurePerformanceAsync(
+                "REF", "TAGS_INITIAL", () => context.Client.GetTagsAsync(), result => $"count={result.Count}");
+
+            var customFieldsTask = MeasurePerformanceAsync(
+                "REF", "CUSTOM_FIELDS_INITIAL", () => context.Client.GetCustomFieldsAsync(), result => $"count={result.Count}");
+
+            var storagePathsTask = MeasurePerformanceAsync(
+                "REF", "STORAGE_PATHS_INITIAL", () => context.Client.GetStoragePathsAsync(), result => $"count={result.Count}");
+
+            var versionTask = MeasurePerformanceAsync(
+                "SYS", "PAPERLESS_VERSION", () => SafeGetPaperlessVersionAsync(context.Client), result => $"available={!string.IsNullOrWhiteSpace(result)}");
+
+            var cacheTask =
+                NavigationCache.LoadAsync(context.CacheKey, _performanceDiagnosticRunId);
+
+            initialNavigationCompletion =
+                new TaskCompletionSource<NavigationRefreshResult>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+            _initialNavigationTask = initialNavigationCompletion.Task;
+
+            var startCriticalWatch = Stopwatch.StartNew();
+            await Task.WhenAll(
+                storagePathsTask,
+                cacheTask);
+            startCriticalWatch.Stop();
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "START_CRITICAL_TASKS_WHEN_ALL", "OK", startCriticalWatch.Elapsed.TotalMilliseconds);
+
+            ApplyStoragePaths(storagePathsTask.Result);
+            var cachedSnapshot = cacheTask.Result;
+
+            if (cachedSnapshot is not null)
+            {
+                _ = CompleteInitialReferenceDataInBackgroundAsync(
+                    correspondentsTask,
+                    documentTypesTask,
+                    tagsTask,
+                    customFieldsTask,
+                    versionTask);
+
+                PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "CACHE_DECISION", "HIT", 0, $"count={cachedSnapshot.Documents.Count}");
+                ApplyNavigationSnapshot(cachedSnapshot);
+
+                _navigationStatus =
+                    $"Navigation sofort aus Cache geladen · Stand {FormatLocalTime(cachedSnapshot.BuiltAtUtc)}";
+
+                initialNavigationCompletion.TrySetResult(
+                    new NavigationRefreshResult(
+                        cachedSnapshot,
+                        Rebuilt: false,
+                        CheckedAtUtc: DateTimeOffset.UtcNow));
+
+            }
+            else
+            {
+                await ApplyInitialReferenceDataAsync(
+                    correspondentsTask,
+                    documentTypesTask,
+                    tagsTask,
+                    customFieldsTask,
+                    versionTask);
+
+                PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "CACHE_DECISION", "MISS_FULL_REBUILD", 0);
+                _navigationStatus =
+                    "Navigation wird erstmals aufgebaut …";
+
+                _isRefreshingNavigation = true;
+
+                var buildTask =
+                    RunNavigationOperationAsync(
+                        forceFullRebuild: true,
+                        existingSnapshot: null);
+
+                _ = CompleteInitialNavigationBuildAsync(
+                    buildTask,
+                    initialNavigationCompletion);
+            }
+
+            _centralSyncRegistration = CentralSync.Register(
+                context.CacheKey,
+                IsSessionAvailable,
+                RunCentralNavigationCheckAsync,
+                HandleCentralSyncStatusChangedAsync,
+                HandleCentralSyncCompletedAsync,
+                HandleCentralSyncFailedAsync,
+                _performanceDiagnosticRunId);
+
+            if (cachedSnapshot is not null)
+            {
+                PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "REQUEST_IMMEDIATE", "QUEUED", 0);
+                CentralSync.RequestImmediateCheck(context.CacheKey);
+            }
+
+            initializationWatch.Stop();
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "INITIALIZE", "OK", initializationWatch.Elapsed.TotalMilliseconds, $"cache_present={cachedSnapshot is not null}");
+        }
+        catch (InvalidOperationException exception)
+            when (string.Equals(
+                exception.Message,
+                "Für den angemeldeten Benutzer ist noch kein persönlicher Paperless-Zugang hinterlegt.",
+                StringComparison.Ordinal))
+        {
+            initialNavigationCompletion?.TrySetException(exception);
+            _initialNavigationTask = null;
+            initializationWatch.Stop();
+            PerformanceDiagnosticsLog.WriteFailure(_performanceDiagnosticRunId, "HOME", "INITIALIZE", initializationWatch.Elapsed.TotalMilliseconds, exception);
+            _errorMessage = exception.Message;
+            _navigationStatus =
+                "Persönliche Paperless-Zuordnung fehlt";
+        }
+        catch (Exception exception)
+        {
+            if (exception is OperationCanceledException)
+            {
+                initialNavigationCompletion?.TrySetCanceled();
+            }
+            else
+            {
+                initialNavigationCompletion?.TrySetException(exception);
+            }
+
+            _initialNavigationTask = null;
+            initializationWatch.Stop();
+            PerformanceDiagnosticsLog.WriteFailure(_performanceDiagnosticRunId, "HOME", "INITIALIZE", initializationWatch.Elapsed.TotalMilliseconds, exception);
+            var error = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: "Die Stammdaten oder der Navigationscache konnten nicht geladen werden.");
+
+            if (!error.IsControlledCancellation)
+            {
+                _errorMessage = error.UserMessage;
+                _navigationStatus = "Navigation nicht verfügbar";
+                LogPaperlessError("Stammdaten und Navigation laden", error);
+            }
+        }
+    }
+
+    private async Task ApplyInitialReferenceDataAsync(
+        Task<IReadOnlyList<CorrespondentDto>> correspondentsTask,
+        Task<IReadOnlyList<DocumentTypeDto>> documentTypesTask,
+        Task<IReadOnlyList<TagDto>> tagsTask,
+        Task<IReadOnlyList<CustomFieldDto>> customFieldsTask,
+        Task<string?> versionTask)
+    {
+        var whenAllWatch = Stopwatch.StartNew();
+        await Task.WhenAll(
+            correspondentsTask,
+            documentTypesTask,
+            tagsTask,
+            customFieldsTask,
+            versionTask);
+        whenAllWatch.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "HOME", "INITIAL_TASKS_WHEN_ALL", "OK", whenAllWatch.Elapsed.TotalMilliseconds);
+
+        await InvokeAsync(() =>
+        {
+            _allCorrespondents = correspondentsTask.Result;
+            _allDocumentTypes = documentTypesTask.Result;
+            _allTags = tagsTask.Result;
+            _allCustomFields = customFieldsTask.Result;
+            _paperlessVersion = versionTask.Result;
+            _areInitialReferenceDataReady = true;
+
+            if (_selectedArea is not null &&
+                _areaCache.TryGetValue(_selectedArea.StoragePathId, out var selectedAreaIndex))
+            {
+                ApplyAreaIndex(selectedAreaIndex);
+
+                if (_selectedCorrespondent is not null)
+                {
+                    SetDocumentTypesForCorrespondent(_selectedCorrespondent.Id);
+                }
+            }
+
+            StateHasChanged();
+        });
+    }
+
+    private async Task CompleteInitialReferenceDataInBackgroundAsync(
+        Task<IReadOnlyList<CorrespondentDto>> correspondentsTask,
+        Task<IReadOnlyList<DocumentTypeDto>> documentTypesTask,
+        Task<IReadOnlyList<TagDto>> tagsTask,
+        Task<IReadOnlyList<CustomFieldDto>> customFieldsTask,
+        Task<string?> versionTask)
+    {
+        try
+        {
+            await ApplyInitialReferenceDataAsync(
+                correspondentsTask,
+                documentTypesTask,
+                tagsTask,
+                customFieldsTask,
+                versionTask);
+        }
+        catch (Exception exception)
+        {
+            PerformanceDiagnosticsLog.WriteFailure(
+                _performanceDiagnosticRunId,
+                "HOME",
+                "INITIAL_REFERENCE_DATA_BACKGROUND",
+                0,
+                exception);
+
+            var error = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: "Die Stammdaten konnten im Hintergrund nicht vollständig geladen werden.");
+
+            if (!error.IsControlledCancellation)
+            {
+                await InvokeAsync(() =>
+                {
+                    _errorMessage = error.UserMessage;
+                    StateHasChanged();
+                });
+
+                LogPaperlessError("Stammdaten im Hintergrund laden", error);
+            }
+        }
+    }
+
+    private bool IsSessionAvailable()
+    {
+        return CircuitConnection.IsConnected &&
+               (_sessionId is null || UserSessions.IsActive(_sessionId));
+    }
+
+    private PaperlessApiClient GetPaperlessClient()
+    {
+        if (!IsSessionAvailable())
+        {
+            throw new WebUiSessionUnavailableException();
+        }
+
+        return _paperlessClient
+            ?? throw new InvalidOperationException(
+                "Der benutzergebundene Paperless-Zugriff ist noch nicht initialisiert.");
+    }
+
+    private static async Task<string?> SafeGetPaperlessVersionAsync(PaperlessApiClient client)
+    {
+        try
+        {
+            var status = await client.GetSystemStatusAsync();
+            return string.IsNullOrWhiteSpace(status.PaperlessNgxVersion)
+                ? null
+                : status.PaperlessNgxVersion.Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task ReloadNavigationReferenceDataAsync()
+    {
+        var watch = Stopwatch.StartNew();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "REF", "RELOAD_ALL", "START", 0);
+        var client =
+            GetPaperlessClient();
+
+        var correspondentsTask =
+            client.GetCorrespondentsAsync();
+
+        var documentTypesTask =
+            client.GetDocumentTypesAsync();
+
+        var tagsTask =
+            client.GetTagsAsync();
+
+        var customFieldsTask =
+            client.GetCustomFieldsAsync();
+
+        var storagePathsTask =
+            client.GetStoragePathsAsync();
+
+        await Task.WhenAll(
+            correspondentsTask,
+            documentTypesTask,
+            tagsTask,
+            customFieldsTask,
+            storagePathsTask);
+        watch.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "REF", "RELOAD_ALL", "OK", watch.Elapsed.TotalMilliseconds, $"correspondents={correspondentsTask.Result.Count};document_types={documentTypesTask.Result.Count};tags={tagsTask.Result.Count};custom_fields={customFieldsTask.Result.Count};storage_paths={storagePathsTask.Result.Count}");
+
+        await InvokeAsync(() =>
+        {
+            _allCorrespondents =
+                correspondentsTask.Result;
+
+            _allDocumentTypes =
+                documentTypesTask.Result;
+
+            _allTags =
+                tagsTask.Result;
+
+            _allCustomFields =
+                customFieldsTask.Result;
+
+            ApplyStoragePaths(
+                storagePathsTask.Result);
+        });
+    }
+
+    private async Task<bool> ReloadStoragePathsAsync()
+    {
+        try
+        {
+            var client = GetPaperlessClient();
+            var storagePaths = await client.GetStoragePathsAsync();
+            var structureChanged = false;
+
+            await InvokeAsync(() =>
+            {
+                var previousIds = _areas
+                    .Where(area => area.StoragePathId != UnassignedAreaKey)
+                    .Select(area => area.StoragePathId)
+                    .OrderBy(id => id)
+                    .ToArray();
+
+                var currentIds = storagePaths
+                    .Where(item => item.Id > 0)
+                    .Select(item => item.Id)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToArray();
+
+                structureChanged = !previousIds.SequenceEqual(currentIds);
+                ApplyStoragePaths(storagePaths);
+                StateHasChanged();
+            });
+
+            return structureChanged;
+        }
+        catch
+        {
+            // Ein vorübergehender Fehler beim Laden der Speicherpfade darf
+            // die normale Navigationsprüfung nicht dauerhaft beenden.
+            return false;
+        }
+    }
+
+    private bool HasCurrentAreaSet(
+        NavigationCacheSnapshot snapshot)
+    {
+        return snapshot.FormatVersion == 3 &&
+            snapshot.SourceStates.ContainsKey(AllAreaKey);
+    }
+
+    private async Task SelectAreaAsync(AreaDefinition area)
+    {
+        ResetDocumentSearchForSelectionChange();
+        _selectedArea = area;
+        _selectedCorrespondent = null;
+        _selectedDocumentType = null;
+        _currentIndex = null;
+        _areaCorrespondents = [];
+        _documentTypes = [];
+        _documents = [];
+        _localFilter = string.Empty;
+        _documentPage = 1;
+        _totalCount = 0;
+        _errorMessage = null;
+
+        if (_areaCache.TryGetValue(
+                area.StoragePathId,
+                out var cached))
+        {
+            _isLoadingArea = false;
+
+            if (_areInitialReferenceDataReady)
+            {
+                ApplyAreaIndex(cached);
+            }
+            else
+            {
+                _currentIndex = cached;
+                _progressPercent = 100;
+            }
+
+            return;
+        }
+
+        _isLoadingArea = true;
+
+        try
+        {
+            if (_initialNavigationTask is null)
+            {
+                _initialNavigationTask =
+                    RunNavigationOperationAsync(
+                        forceFullRebuild: true,
+                        existingSnapshot: null);
+            }
+
+            var result =
+                await _initialNavigationTask;
+
+            ApplyNavigationSnapshot(result.Snapshot);
+
+            if (_selectedArea?.StoragePathId ==
+                    area.StoragePathId &&
+                _areaCache.TryGetValue(
+                    area.StoragePathId,
+                    out var index))
+            {
+                ApplyAreaIndex(index);
+            }
+        }
+        catch (Exception exception)
+        {
+            var error = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: "Die Korrespondenten dieses Bereichs konnten nicht geladen werden.");
+
+            if (!error.IsControlledCancellation)
+            {
+                LogPaperlessError("Korrespondenten eines Bereichs laden", error);
+
+                if (_selectedArea?.StoragePathId == area.StoragePathId)
+                {
+                    _errorMessage = error.UserMessage;
+                }
+            }
+        }
+        finally
+        {
+            if (_selectedArea?.StoragePathId ==
+                area.StoragePathId)
+            {
+                _isLoadingArea = false;
+            }
+        }
+    }
+
+    private async Task<NavigationRefreshResult> RunCentralNavigationCheckAsync(
+        NavigationCacheSnapshot cachedSnapshot,
+        IProgress<CentralSyncProgress> progress)
+    {
+        if (!HasCurrentAreaSet(cachedSnapshot))
+        {
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "DECISION", "FULL_REBUILD", 0, "reason=current_area_set_missing");
+            return await RunNavigationOperationAsync(
+                forceFullRebuild: true,
+                existingSnapshot: cachedSnapshot);
+        }
+
+        var latestKnownModifiedUtc = cachedSnapshot.Documents
+            .Where(document => document.ModifiedUtc.HasValue)
+            .Select(document => document.ModifiedUtc!.Value)
+            .DefaultIfEmpty(cachedSnapshot.BuiltAtUtc)
+            .Max();
+
+        var knownDocumentsAtLatestTimestamp = cachedSnapshot.Documents
+            .Count(document => document.ModifiedUtc == latestKnownModifiedUtc);
+
+        var client = GetPaperlessClient();
+
+        var documentCheckStartedAt = DateTimeOffset.UtcNow;
+        Logger.LogInformation("Dokumenten-Änderungsprüfung gestartet.");
+        var hasDocumentChanges = await client.HasNavigationDocumentChangesAsync(
+            latestKnownModifiedUtc,
+            knownDocumentsAtLatestTimestamp);
+        Logger.LogInformation(
+            "Dokumenten-Änderungsprüfung beendet. Änderung erkannt: {HasChanges}; DauerMs: {DurationMs}",
+            hasDocumentChanges,
+            (DateTimeOffset.UtcNow - documentCheckStartedAt).TotalMilliseconds);
+
+        var visibleCountCheckStartedAt = DateTimeOffset.UtcNow;
+        Logger.LogInformation("Prüfung der sichtbaren Dokumentanzahl gestartet.");
+        var visibleDocumentCount =
+            await client.GetVisibleNavigationDocumentCountAsync();
+        var visibleDocumentCountChanged =
+            visibleDocumentCount != cachedSnapshot.Documents.Count;
+        Logger.LogInformation(
+            "Prüfung der sichtbaren Dokumentanzahl beendet. Cache: {CachedCount}; Aktuell: {VisibleCount}; Änderung erkannt: {HasChanges}; DauerMs: {DurationMs}",
+            cachedSnapshot.Documents.Count,
+            visibleDocumentCount,
+            visibleDocumentCountChanged,
+            (DateTimeOffset.UtcNow - visibleCountCheckStartedAt).TotalMilliseconds);
+
+        var trashChanged = false;
+        var nowUtc = DateTimeOffset.UtcNow;
+
+        if (nowUtc >= _nextTrashCheckUtc)
+        {
+            var trashCheckStartedAt = DateTimeOffset.UtcNow;
+            Logger.LogInformation("Papierkorbprüfung gestartet.");
+            var currentTrashDocumentIds = await client.GetTrashDocumentIdsAsync();
+            Logger.LogInformation(
+                "Papierkorbprüfung beendet. Anzahl technischer IDs: {TrashIdCount}; DauerMs: {DurationMs}",
+                currentTrashDocumentIds.Count,
+                (DateTimeOffset.UtcNow - trashCheckStartedAt).TotalMilliseconds);
+            var cachedDocumentIds = cachedSnapshot.Documents
+                .Select(document => document.Id)
+                .ToHashSet();
+
+            trashChanged =
+                currentTrashDocumentIds.Any(cachedDocumentIds.Contains) ||
+                !_knownTrashDocumentIds.SetEquals(currentTrashDocumentIds);
+
+            _knownTrashDocumentIds = currentTrashDocumentIds;
+            _nextTrashCheckUtc = nowUtc.Add(TrashCheckInterval);
+        }
+
+        if (!hasDocumentChanges &&
+            !visibleDocumentCountChanged &&
+            !trashChanged)
+        {
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "DECISION", "CACHE_KEEP", 0, $"cached={cachedSnapshot.Documents.Count};visible={visibleDocumentCount}");
+            return new NavigationRefreshResult(
+                cachedSnapshot,
+                Rebuilt: false,
+                CheckedAtUtc: DateTimeOffset.UtcNow);
+        }
+
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "DECISION", "RECONCILE", 0, $"document_changes={hasDocumentChanges};visible_count_changed={visibleDocumentCountChanged};trash_changed={trashChanged};cached={cachedSnapshot.Documents.Count};visible={visibleDocumentCount}");
+
+        await InvokeAsync(() =>
+        {
+            _navigationStatus = trashChanged
+                ? "Änderung im Papierkorb erkannt · Navigation wird abgeglichen …"
+                : visibleDocumentCountChanged
+                    ? "Geänderte Dokumentrechte erkannt · Navigation wird abgeglichen …"
+                    : "Dokumentänderung erkannt · Navigation wird gezielt aktualisiert …";
+            StateHasChanged();
+        });
+
+        return await RunNavigationOperationAsync(
+            forceFullRebuild: false,
+            existingSnapshot: cachedSnapshot,
+            centralProgress: progress);
+    }
+
+    private Task HandleCentralSyncStatusChangedAsync(CentralSyncStatus status)
+    {
+        return InvokeAsync(() =>
+        {
+            _isRefreshingNavigation = status.IsRunning;
+
+            if (!status.IsRunning)
+            {
+                StopSyncStatusUpdates();
+                _syncStartedAt = null;
+                StateHasChanged();
+                return;
+            }
+
+            _syncStartedAt = status.StartedAtUtc ?? DateTimeOffset.UtcNow;
+            _syncElapsedSeconds = Math.Max(
+                0,
+                (int)(DateTimeOffset.UtcNow - _syncStartedAt.Value).TotalSeconds);
+            _progressPercent = status.Percent;
+            _loadedDocuments = status.LoadedDocuments;
+            _totalDocumentsToLoad = status.TotalDocuments;
+            _navigationStatus = status.StatusText;
+            StartSyncStatusUpdates();
+            StateHasChanged();
+        });
+    }
+
+    private async Task HandleCentralSyncCompletedAsync(
+        NavigationRefreshResult result,
+        bool isFullRefresh)
+    {
+        var callbackWatch = Stopwatch.StartNew();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "COMPLETED_CALLBACK", "START", 0, $"rebuilt={result.Rebuilt};full_refresh={isFullRefresh};count={result.Snapshot.Documents.Count}");
+        if (result.Rebuilt || isFullRefresh)
+        {
+            await ReloadNavigationReferenceDataAsync();
+        }
+
+        await InvokeAsync(() =>
+        {
+            ApplyNavigationSnapshot(result.Snapshot);
+
+            var durationText = FormatSyncDuration();
+            _navigationStatus = BuildCompletedNavigationStatus(
+                isFullRefresh
+                    ? "Navigation vollständig aktualisiert"
+                    : result.Rebuilt
+                        ? "Änderungen übernommen"
+                        : "Navigation ist aktuell",
+                result.Snapshot.Documents.Count,
+                durationText,
+                result.CheckedAtUtc);
+
+            _isRefreshingNavigation = false;
+            StopSyncStatusUpdates();
+            _syncStartedAt = null;
+            StateHasChanged();
+        });
+
+        if ((result.Rebuilt || isFullRefresh) && _selectedDocumentType is not null)
+        {
+            await InvokeAsync(async () =>
+            {
+                _documentPage = 1;
+                await LoadAllDocumentsForCurrentSelectionAsync();
+                StateHasChanged();
+            });
+        }
+
+        callbackWatch.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "SYNC", "COMPLETED_CALLBACK", "OK", callbackWatch.Elapsed.TotalMilliseconds, $"rebuilt={result.Rebuilt};full_refresh={isFullRefresh};count={result.Snapshot.Documents.Count}");
+    }
+
+    private Task HandleCentralSyncFailedAsync(CentralSyncFailure failure)
+    {
+        return InvokeAsync(() =>
+        {
+            _navigationStatus = failure.IsFullRefresh
+                ? "Vollständige Aktualisierung fehlgeschlagen · vorhandener Cache bleibt nutzbar"
+                : "Zentrale Hintergrundprüfung fehlgeschlagen · vorhandener Cache bleibt nutzbar";
+
+            if (failure.IsFullRefresh)
+            {
+                _errorMessage = failure.Error.UserMessage;
+            }
+
+            _isRefreshingNavigation = false;
+            StopSyncStatusUpdates();
+            _syncStartedAt = null;
+            StateHasChanged();
+        });
+    }
+
+    private async Task CompleteInitialNavigationBuildAsync(
+        Task<NavigationRefreshResult> buildTask,
+        TaskCompletionSource<NavigationRefreshResult> initialNavigationCompletion)
+    {
+        try
+        {
+            var result = await buildTask;
+            initialNavigationCompletion.TrySetResult(result);
+
+            if (result.Rebuilt)
+            {
+                await ReloadNavigationReferenceDataAsync();
+            }
+
+            await InvokeAsync(() =>
+            {
+                ApplyNavigationSnapshot(result.Snapshot);
+
+                _navigationStatus =
+                    $"Navigation aufgebaut · {result.Snapshot.Documents.Count:N0} Dokumente · {FormatLocalTime(result.CheckedAtUtc)}";
+
+                _isRefreshingNavigation = false;
+                StopSyncStatusUpdates();
+                _syncStartedAt = null;
+                StateHasChanged();
+            });
+        }
+        catch (Exception exception)
+        {
+            if (exception is OperationCanceledException)
+            {
+                initialNavigationCompletion.TrySetCanceled();
+            }
+            else
+            {
+                initialNavigationCompletion.TrySetException(exception);
+            }
+
+            var isLocalCacheError =
+                exception is IOException or UnauthorizedAccessException;
+
+            var error = isLocalCacheError
+                ? new PaperlessErrorInfo(
+                    $"PLS-{Guid.NewGuid():N}"[..16].ToUpperInvariant(),
+                    "Lokaler Cachefehler",
+                    null,
+                    "Der lokale Navigationscache konnte nicht gespeichert werden.",
+                    exception.GetType().Name,
+                    IsTimeout: false,
+                    IsControlledCancellation: false)
+                : PaperlessErrorClassifier.Classify(
+                    exception,
+                    CancellationToken.None,
+                    fallbackMessage: "Die Navigation konnte nicht aufgebaut werden.");
+
+            LogPaperlessError("Ersten Navigationsaufbau abschließen", error);
+
+            await InvokeAsync(() =>
+            {
+                _initialNavigationTask = null;
+                _isRefreshingNavigation = false;
+                _navigationStatus = "Erster Navigationsaufbau fehlgeschlagen";
+                _errorMessage = error.UserMessage;
+                StateHasChanged();
+            });
+        }
+    }
+
+    private async Task RefreshNavigationAsync()
+    {
+        if (_isRefreshingNavigation ||
+            _navigationCacheKey is null)
+        {
+            return;
+        }
+
+        _errorMessage = null;
+
+        await CentralSync.RequestFullRefreshAsync(
+            _navigationCacheKey,
+            IsSessionAvailable,
+            RunCentralFullRefreshAsync);
+    }
+
+    private async Task<NavigationRefreshResult> RunCentralFullRefreshAsync(
+        IProgress<CentralSyncProgress> progress)
+    {
+        await ReloadStoragePathsAsync();
+
+        var refreshTask = RunNavigationOperationAsync(
+            forceFullRebuild: true,
+            existingSnapshot: _navigationSnapshot,
+            centralProgress: progress);
+
+        _initialNavigationTask = refreshTask;
+        return await refreshTask;
+    }
+
+    private Task<NavigationRefreshResult>
+        RunNavigationOperationAsync(
+            bool forceFullRebuild,
+            NavigationCacheSnapshot? existingSnapshot,
+            IProgress<CentralSyncProgress>? centralProgress = null)
+    {
+        if (_navigationCacheKey is null)
+        {
+            throw new InvalidOperationException(
+                "Der benutzerbezogene Cacheschlüssel fehlt.");
+        }
+
+        var cacheKey = _navigationCacheKey;
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "OPERATION", "START", 0, $"force_full={forceFullRebuild};existing={existingSnapshot is not null};existing_count={existingSnapshot?.Documents.Count ?? 0}");
+
+        return NavigationCache.RunSingleOperationAsync(
+            cacheKey,
+            async () =>
+            {
+                var client =
+                    GetPaperlessClient();
+
+                if (!forceFullRebuild &&
+                    existingSnapshot is not null)
+                {
+                    var currentState =
+                        await client.GetNavigationSourceStateAsync();
+
+                    if (existingSnapshot.Matches(
+                            currentState))
+                    {
+                        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "DECISION", "CACHE_KEEP", 0, "reason=source_state_matches");
+                        return new NavigationRefreshResult(
+                            existingSnapshot,
+                            Rebuilt: false,
+                            CheckedAtUtc:
+                                DateTimeOffset.UtcNow);
+                    }
+
+                    await InvokeAsync(() =>
+                    {
+                        _navigationStatus =
+                            "Änderungen gefunden · betroffene Zuordnungen werden übernommen …";
+                        StateHasChanged();
+                    });
+
+                    var currentTotal = currentState.Values.Sum(state => state.DocumentCount);
+                    var cachedTotal = existingSnapshot.Documents.Count;
+
+                    if (currentTotal >= cachedTotal)
+                    {
+                        var changedDocuments =
+                            await client.GetNavigationDocumentsModifiedSinceAsync(
+                                existingSnapshot.BuiltAtUtc.AddMinutes(-15));
+
+                        var incrementalSnapshot = existingSnapshot.ApplyChanges(
+                            changedDocuments);
+
+                        // Die Statuswerte der API sind maßgeblich. Dadurch führt eine
+                        // reine Umbenennung eines Speicherpfads nicht zu wiederholten
+                        // Sicherheitsprüfungen wegen Zeitstempelabweichungen.
+                        incrementalSnapshot.SourceStates =
+                            currentState.ToDictionary(pair => pair.Key, pair => pair.Value);
+
+                        if (incrementalSnapshot.Documents.Count == currentTotal &&
+                            incrementalSnapshot.Matches(currentState))
+                        {
+                            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "DECISION", "INCREMENTAL_APPLY", 0, $"changed={changedDocuments.Count};count={incrementalSnapshot.Documents.Count}");
+                            await NavigationCache.SaveAsync(cacheKey, incrementalSnapshot, _performanceDiagnosticRunId);
+                            return new NavigationRefreshResult(
+                                incrementalSnapshot,
+                                Rebuilt: true,
+                                CheckedAtUtc: DateTimeOffset.UtcNow);
+                        }
+                    }
+
+                    PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "DECISION", "FULL_REBUILD", 0, "reason=incremental_not_authoritative");
+                    await InvokeAsync(() =>
+                    {
+                        _navigationStatus =
+                            "Abweichung nicht eindeutig · vollständige Sicherheitsprüfung läuft …";
+                        StateHasChanged();
+                    });
+                }
+
+                var progress =
+                    new Progress<AreaNavigationProgress>(
+                        value =>
+                        {
+                            _progressPercent =
+                                value.Percent;
+
+                            _loadedDocuments =
+                                value.LoadedDocuments;
+
+                            _totalDocumentsToLoad =
+                                value.TotalDocuments;
+
+                            _navigationStatus =
+                                $"Navigation wird aktualisiert · {value.Percent}%";
+
+                            centralProgress?.Report(new CentralSyncProgress(
+                                value.Percent,
+                                value.LoadedDocuments,
+                                value.TotalDocuments,
+                                _navigationStatus));
+
+                            _ = InvokeAsync(
+                                StateHasChanged);
+                        });
+
+                var storagePathIds =
+                    _areas
+                        .Select(area =>
+                            area.StoragePathId)
+                        .ToArray();
+
+                if (forceFullRebuild)
+                {
+                    PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "DECISION", "FULL_REBUILD", 0, "reason=forced");
+                    var documents =
+                        await client.GetNavigationDocumentsAsync(
+                            progress);
+
+                    var snapshotWatch = Stopwatch.StartNew();
+                    var snapshot =
+                        NavigationCacheSnapshot.Create(
+                            documents);
+                    snapshotWatch.Stop();
+                    PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "SNAPSHOT_CREATE", "OK", snapshotWatch.Elapsed.TotalMilliseconds, $"mode=forced;count={snapshot.Documents.Count}");
+
+                    // Die bewusst manuell ausgelöste Vollprüfung bleibt unverändert:
+                    // ein vollständiger Aufbau, anschließend aktueller API-Status
+                    // und direkte Speicherung ohne Vorher-nachher-Vergleich.
+                    var authoritativeState =
+                        await client.GetNavigationSourceStateAsync();
+                    snapshot.SourceStates =
+                        authoritativeState.ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value);
+
+                    await InvokeAsync(() =>
+                    {
+                        _navigationStatus =
+                            "Navigation wird gespeichert …";
+                        StateHasChanged();
+                    });
+
+                    await NavigationCache.SaveAsync(
+                        cacheKey,
+                        snapshot,
+                        _performanceDiagnosticRunId);
+
+                    return new NavigationRefreshResult(
+                        snapshot,
+                        Rebuilt: true,
+                        CheckedAtUtc:
+                            DateTimeOffset.UtcNow);
+                }
+
+                const int maximumAutomaticBuildAttempts = 2;
+
+                for (var attempt = 1;
+                     attempt <= maximumAutomaticBuildAttempts;
+                     attempt++)
+                {
+                    var stateBeforeBuild =
+                        await client.GetNavigationSourceStateAsync();
+
+                    var documents =
+                        await client.GetNavigationDocumentsAsync(
+                            progress);
+
+                    var snapshotWatch = Stopwatch.StartNew();
+                    var snapshot =
+                        NavigationCacheSnapshot.Create(
+                            documents);
+                    snapshotWatch.Stop();
+                    PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "SNAPSHOT_CREATE", "OK", snapshotWatch.Elapsed.TotalMilliseconds, $"mode=automatic;attempt={attempt};count={snapshot.Documents.Count}");
+
+                    var stateAfterBuild =
+                        await client.GetNavigationSourceStateAsync();
+
+                    snapshot.SourceStates =
+                        stateBeforeBuild.ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value);
+
+                    if (snapshot.Matches(stateAfterBuild))
+                    {
+                        snapshot.SourceStates =
+                            stateAfterBuild.ToDictionary(
+                                pair => pair.Key,
+                                pair => pair.Value);
+
+                        await InvokeAsync(() =>
+                        {
+                            _navigationStatus =
+                                "Navigation wird gespeichert …";
+                            StateHasChanged();
+                        });
+
+                        await NavigationCache.SaveAsync(
+                            cacheKey,
+                            snapshot,
+                            _performanceDiagnosticRunId);
+
+                        return new NavigationRefreshResult(
+                            snapshot,
+                            Rebuilt: true,
+                            CheckedAtUtc:
+                                DateTimeOffset.UtcNow);
+                    }
+
+                    if (attempt <
+                        maximumAutomaticBuildAttempts)
+                    {
+                        await InvokeAsync(() =>
+                        {
+                            _navigationStatus =
+                                "Bestand während des Aufbaus geändert · einmaliger Neuversuch läuft …";
+                            StateHasChanged();
+                        });
+                    }
+                }
+
+                if (existingSnapshot is not null)
+                {
+                    await InvokeAsync(() =>
+                    {
+                        _navigationStatus =
+                            "Bestand erneut geändert · bisheriger Navigationscache bleibt erhalten";
+                        StateHasChanged();
+                    });
+
+                    return new NavigationRefreshResult(
+                        existingSnapshot,
+                        Rebuilt: false,
+                        CheckedAtUtc:
+                            DateTimeOffset.UtcNow);
+                }
+
+                throw new InvalidOperationException(
+                    "Der Dokumentbestand hat sich während beider automatischen Cacheaufbauten geändert.");
+            });
+    }
+
+    private void ApplyNavigationSnapshot(
+        NavigationCacheSnapshot snapshot)
+    {
+        var overall = Stopwatch.StartNew();
+        _navigationSnapshot = snapshot;
+        var areasWatch = Stopwatch.StartNew();
+        RebuildAreasForSnapshot(snapshot);
+        areasWatch.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "REBUILD_AREAS", "OK", areasWatch.Elapsed.TotalMilliseconds, $"count={snapshot.Documents.Count}");
+
+        var selectedCorrespondentId =
+            _selectedCorrespondent?.Id;
+
+        var selectedDocumentTypeId =
+            _selectedDocumentType?.Id;
+
+        var indexesWatch = Stopwatch.StartNew();
+        var indexes = snapshot.BuildIndexes(
+            _areas.Select(area =>
+                area.StoragePathId));
+        indexesWatch.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "BUILD_INDEXES", "OK", indexesWatch.Elapsed.TotalMilliseconds, $"count={snapshot.Documents.Count};areas={indexes.Count}");
+
+        _areaCache.Clear();
+
+        foreach (var pair in indexes)
+        {
+            _areaCache[pair.Key] = pair.Value;
+        }
+        overall.Stop();
+        PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "NAV", "APPLY_SNAPSHOT", "OK", overall.Elapsed.TotalMilliseconds, $"count={snapshot.Documents.Count};areas={indexes.Count}");
+
+        if (_selectedArea is null ||
+            !_areaCache.TryGetValue(
+                _selectedArea.StoragePathId,
+                out var selectedAreaIndex))
+        {
+            return;
+        }
+
+        ApplyAreaIndex(selectedAreaIndex);
+
+        if (!selectedCorrespondentId.HasValue)
+        {
+            return;
+        }
+
+        var preservedCorrespondent =
+            _areaCorrespondents.FirstOrDefault(
+                item =>
+                    item.Id ==
+                    selectedCorrespondentId.Value);
+
+        if (preservedCorrespondent is null)
+        {
+            _selectedCorrespondent = null;
+            _selectedDocumentType = null;
+            _documentTypes = [];
+            _documents = [];
+            _totalCount = 0;
+            return;
+        }
+
+        _selectedCorrespondent =
+            preservedCorrespondent;
+
+        SetDocumentTypesForCorrespondent(
+            preservedCorrespondent.Id);
+
+        if (!selectedDocumentTypeId.HasValue)
+        {
+            return;
+        }
+
+        var preservedDocumentType =
+            _documentTypes.FirstOrDefault(
+                item =>
+                    item.Id ==
+                    selectedDocumentTypeId.Value);
+
+        if (preservedDocumentType is null)
+        {
+            _selectedDocumentType = null;
+            _documents = [];
+            _totalCount = 0;
+            return;
+        }
+
+        _selectedDocumentType =
+            preservedDocumentType;
+    }
+
+    private void ApplyAreaIndex(AreaNavigationIndexDto index)
+    {
+        _currentIndex = index;
+        _progressPercent = 100;
+
+        var readableIds = _allCorrespondents.Select(item => item.Id).ToHashSet();
+        var hasPrivate = index.CorrespondentIds.Any(id => !readableIds.Contains(id));
+
+        _areaCorrespondents =
+        [
+            AllCorrespondents,
+            UnassignedCorrespondent,
+            .. (hasPrivate ? new[] { PrivateCorrespondent } : Array.Empty<CorrespondentDto>()),
+            .. _allCorrespondents
+                .Where(item => index.CorrespondentIds.Contains(item.Id))
+                .OrderBy(item => DisplayCorrespondentName(item.Name))
+        ];
+    }
+
+    private void SelectCorrespondent(
+        CorrespondentDto correspondent)
+    {
+        ResetDocumentSearchForSelectionChange();
+        _selectedCorrespondent = correspondent;
+        _selectedDocumentType = null;
+        _documents = [];
+        _documentPage = 1;
+        _totalCount = 0;
+
+        SetDocumentTypesForCorrespondent(
+            correspondent.Id);
+    }
+
+    private void SetDocumentTypesForCorrespondent(int correspondentId)
+    {
+        if (_currentIndex is null)
+        {
+            _documentTypes = [];
+            return;
+        }
+
+        IReadOnlySet<int> typeIds;
+        var hasUnassignedType = false;
+
+        if (correspondentId == AllSelectionId)
+        {
+            typeIds = _currentIndex.AllDocumentTypeIds;
+            hasUnassignedType = _currentIndex.HasAnyUnassignedDocumentType;
+        }
+        else if (correspondentId == UnassignedSelectionId)
+        {
+            typeIds = _currentIndex.DocumentTypeIdsForUnassignedCorrespondent;
+            hasUnassignedType = _currentIndex.HasUnassignedDocumentTypeForUnassignedCorrespondent;
+        }
+        else if (correspondentId == PrivateSelectionId)
+        {
+            var readableIds = _allCorrespondents.Select(item => item.Id).ToHashSet();
+            var collected = new HashSet<int>();
+            foreach (var id in _currentIndex.CorrespondentIds.Where(id => !readableIds.Contains(id)))
+            {
+                if (_currentIndex.DocumentTypeIdsByCorrespondent.TryGetValue(id, out var ids))
+                    collected.UnionWith(ids);
+                if (_currentIndex.CorrespondentIdsWithUnassignedDocumentType.Contains(id))
+                    hasUnassignedType = true;
+            }
+            typeIds = collected;
+        }
+        else
+        {
+            typeIds = _currentIndex.DocumentTypeIdsByCorrespondent.TryGetValue(correspondentId, out var ids)
+                ? ids
+                : new HashSet<int>();
+            hasUnassignedType = _currentIndex.CorrespondentIdsWithUnassignedDocumentType.Contains(correspondentId);
+        }
+
+        var readableTypeIds = _allDocumentTypes.Select(item => item.Id).ToHashSet();
+        var hasPrivate = typeIds.Any(id => !readableTypeIds.Contains(id));
+
+        _documentTypes =
+        [
+            AllDocumentTypes,
+            UnassignedDocumentType,
+            .. (hasPrivate ? new[] { PrivateDocumentType } : Array.Empty<DocumentTypeDto>()),
+            .. _allDocumentTypes
+                .Where(item => typeIds.Contains(item.Id))
+                .OrderBy(item => DisplayDocumentTypeName(item.Name))
+        ];
+    }
+
+    private void ResetDocumentSearchForSelectionChange()
+    {
+        _documentFilter = string.Empty;
+        _documentSearchVersion++;
+        _hybridDocumentSearchCancellation?.Cancel();
+        _hybridDocumentSearchCancellation?.Dispose();
+        _hybridDocumentSearchCancellation = null;
+        _activeDocumentSearchResults = [];
+        _isSearchingDocuments = false;
+    }
+
+    private async Task LoadDocumentsAsync(DocumentTypeDto documentType)
+    {
+        ResetDocumentSearchForSelectionChange();
+        _selectedDocumentType = documentType;
+        _documentPage = 1;
+        _documents = [];
+        _allDocumentsForCurrentSelection = [];
+        _documentsById = new Dictionary<int, DocumentListItemDto>();
+        ClearDocumentDetails();
+        _totalCount = 0;
+        _hasMoreDocuments = false;
+
+        await LoadAllDocumentsForCurrentSelectionAsync();
+    }
+
+    [JSInvokable]
+    public async Task LoadMoreDocumentsFromScrollAsync()
+    {
+        if (_isLoadingDocuments || _isLoadingMoreDocuments || !_hasMoreDocuments)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_documentFilter))
+        {
+            var nextCount = Math.Min(
+                _documents.Count + DocumentsPerBatch,
+                _activeDocumentSearchResults.Count);
+            _documents = _activeDocumentSearchResults.Take(nextCount).ToArray();
+            _hasMoreDocuments = _documents.Count < _totalCount;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+
+        await LoadMorePreparingDocumentsAsync();
+    }
+
+    private async Task LoadAllDocumentsForCurrentSelectionAsync()
+    {
+        if (_selectedArea is null ||
+            _selectedCorrespondent is null ||
+            _selectedDocumentType is null)
+        {
+            return;
+        }
+
+        var requestSearchVersion = ++_documentSearchVersion;
+        var selectedDocumentIdBeforeReload = _selectedDocument?.Id;
+        var documentPageBeforeReload = Math.Max(1, _documentPage);
+        _isLoadingDocuments = true;
+        _errorMessage = null;
+
+        try
+        {
+            var client = GetPaperlessClient();
+
+            // Zuerst nur ein kleines Paket laden, damit die Dokumentliste sofort benutzbar ist.
+            var firstPage = await client.GetDocumentsAsync(
+                page: 1,
+                pageSize: DocumentsPerBatch,
+                storagePathId: _selectedArea.StoragePathId > 0
+                    ? _selectedArea.StoragePathId
+                    : null,
+                storagePathIds: GetSelectedPrivateStoragePathIds(),
+                storagePathIsNull: _selectedArea.StoragePathId == UnassignedAreaKey,
+                correspondentId: _selectedCorrespondent.Id > 0
+                    ? _selectedCorrespondent.Id
+                    : null,
+                correspondentIds: GetSelectedPrivateCorrespondentIds(),
+                correspondentIsNull: _selectedCorrespondent.Id == UnassignedSelectionId,
+                documentTypeId: _selectedDocumentType.Id > 0
+                    ? _selectedDocumentType.Id
+                    : null,
+                documentTypeIds: GetSelectedPrivateDocumentTypeIds(),
+                documentTypeIsNull: _selectedDocumentType.Id == UnassignedSelectionId,
+                sortAscending: _documentsAscending);
+
+            if (requestSearchVersion != _documentSearchVersion)
+            {
+                return;
+            }
+
+            _allDocumentsForCurrentSelection = firstPage.Results.ToArray();
+            _documentsById = firstPage.Results.ToDictionary(document => document.Id);
+            _documents = firstPage.Results.ToArray();
+            _totalCount = firstPage.Count;
+            _normalDocumentTotalCount = firstPage.Count;
+            _normalDocumentsAscending = _documentsAscending;
+            _activeDocumentSearchResults = [];
+            _hasMoreDocuments = _documents.Count < _totalCount;
+            _documentPage = 1;
+                _isLoadingDocuments = false;
+
+            await InvokeAsync(StateHasChanged);
+
+            // v9.70.2B: Kein vollständiger Titelbestand wird mehr im Hintergrund geladen.
+            // Die bereits sichtbaren Seiten bleiben lokal durchsuchbar. Bei einer
+            // unvollständigen Auswahl übernimmt die lesende Paperless-API die Suche.
+            _documentPage = 1;
+
+            await ReconcileSelectedDocumentAfterReloadAsync(
+                selectedDocumentIdBeforeReload,
+                requestSearchVersion);
+
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception exception)
+        {
+            var error = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: "Die Dokumente konnten nicht geladen werden.");
+
+            if (!error.IsControlledCancellation)
+            {
+                LogPaperlessError(
+                    "Dokumente laden",
+                    error,
+                    cacheContinues: _documents.Count > 0);
+
+                if (_documents.Count == 0)
+                {
+                    _allDocumentsForCurrentSelection = [];
+                    _documentsById = new Dictionary<int, DocumentListItemDto>();
+                    _documents = [];
+                    _totalCount = 0;
+                    _hasMoreDocuments = false;
+                    _errorMessage = error.UserMessage;
+                }
+            }
+        }
+        finally
+        {
+            _isLoadingDocuments = false;
+            _isLoadingMoreDocuments = false;
+        }
+    }
+
+    [JSInvokable]
+    public async Task LoadMorePreparingDocumentsAsync()
+    {
+        if (_isLoadingMoreDocuments ||
+            _selectedArea is null ||
+            _selectedCorrespondent is null ||
+            _selectedDocumentType is null ||
+            !string.IsNullOrWhiteSpace(_documentFilter) ||
+            _allDocumentsForCurrentSelection.Count >= _normalDocumentTotalCount)
+        {
+            return;
+        }
+
+        _isLoadingMoreDocuments = true;
+        var requestSearchVersion = _documentSearchVersion;
+        var nextPage = (_allDocumentsForCurrentSelection.Count / DocumentsPerBatch) + 1;
+
+        try
+        {
+            var client = GetPaperlessClient();
+            var page = await client.GetDocumentsAsync(
+                page: nextPage,
+                pageSize: DocumentsPerBatch,
+                storagePathId: _selectedArea.StoragePathId > 0
+                    ? _selectedArea.StoragePathId
+                    : null,
+                storagePathIds: GetSelectedPrivateStoragePathIds(),
+                storagePathIsNull: _selectedArea.StoragePathId == UnassignedAreaKey,
+                correspondentId: _selectedCorrespondent.Id > 0
+                    ? _selectedCorrespondent.Id
+                    : null,
+                correspondentIds: GetSelectedPrivateCorrespondentIds(),
+                correspondentIsNull: _selectedCorrespondent.Id == UnassignedSelectionId,
+                documentTypeId: _selectedDocumentType.Id > 0
+                    ? _selectedDocumentType.Id
+                    : null,
+                documentTypeIds: GetSelectedPrivateDocumentTypeIds(),
+                documentTypeIsNull: _selectedDocumentType.Id == UnassignedSelectionId,
+                sortAscending: _documentsAscending);
+
+            if (requestSearchVersion != _documentSearchVersion)
+            {
+                return;
+            }
+
+            var additions = page.Results
+                .Where(document => !_documentsById.ContainsKey(document.Id))
+                .ToArray();
+
+            if (additions.Length == 0)
+            {
+                return;
+            }
+
+            foreach (var document in additions)
+            {
+                _documentsById[document.Id] = document;
+            }
+
+            _documents = [.. _documents, .. additions];
+            _allDocumentsForCurrentSelection = [.. _allDocumentsForCurrentSelection, .. additions];
+            _totalCount = _normalDocumentTotalCount;
+            _hasMoreDocuments =
+                _allDocumentsForCurrentSelection.Count < _normalDocumentTotalCount;
+
+            await InvokeAsync(StateHasChanged);
+        }
+        finally
+        {
+            _isLoadingMoreDocuments = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var renderWatch = Stopwatch.StartNew();
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "RENDER", "FIRST_RENDER", "START", 0);
+            _infiniteScrollModule = await ImportPerformanceModuleAsync(
+                "IMPORT_INFINITE_SCROLL",
+                "./js/infiniteScroll.js");
+
+            _listNavigationModule = await ImportPerformanceModuleAsync(
+                "IMPORT_LIST_NAVIGATION",
+                "./js/listNavigation.js");
+
+            _previewResizeModule = await ImportPerformanceModuleAsync(
+                "IMPORT_PREVIEW_RESIZE",
+                "./js/previewResize.js");
+
+            _quickLookResizeModule = await ImportPerformanceModuleAsync(
+                "IMPORT_QUICK_LOOK_RESIZE",
+                "./js/quickLookResize.js");
+
+            _quickLookPdfModule = await ImportPerformanceModuleAsync(
+                "IMPORT_QUICK_LOOK_PDF",
+                "./js/quickLookPdf.js");
+
+            _columnResizeModule = await ImportPerformanceModuleAsync(
+                "IMPORT_COLUMN_RESIZE",
+                "./js/columnResize.js");
+
+            _documentLoadFooterModule = await ImportPerformanceModuleAsync(
+                "IMPORT_DOCUMENT_LOAD_FOOTER",
+                "./js/documentLoadFooter.js");
+
+            _dotNetReference = DotNetObjectReference.Create(this);
+
+            await _documentLoadFooterModule.InvokeVoidAsync(
+                "attach",
+                _documentsColumn);
+
+            await _columnResizeModule.InvokeVoidAsync(
+                "attach",
+                _columnsContainer,
+                150,
+                150,
+                150,
+                210);
+            renderWatch.Stop();
+            PerformanceDiagnosticsLog.Write(_performanceDiagnosticRunId, "RENDER", "FIRST_RENDER", "OK", renderWatch.Elapsed.TotalMilliseconds);
+        }
+
+        if (_documentInspectorOpen &&
+            _selectedDocument is not null &&
+            !_thumbnailFailed &&
+            _previewResizeModule is not null)
+        {
+            await _previewResizeModule.InvokeVoidAsync(
+                "attach",
+                _documentDetailTop,
+                _documentPreviewFrame,
+                _documentPreviewImage,
+                _documentPreviewResizeHandle,
+                150,
+                460,
+                220,
+                16);
+        }
+
+        if (_quickLookOpen && _quickLookResizeModule is not null)
+        {
+            await _quickLookResizeModule.InvokeVoidAsync(
+                "attach",
+                _quickLookDialog,
+                _quickLookContent,
+                _quickLookDivider,
+                _dotNetReference,
+                300,
+                420,
+                260,
+                500);
+        }
+
+        if (_quickLookOpen &&
+            _selectedDocument is not null &&
+            _quickLookPdfModule is not null)
+        {
+            await _quickLookPdfModule.InvokeVoidAsync(
+                "attach",
+                _quickLookPdfViewer,
+                GetDocumentPreviewUrl(_selectedDocument.Id));
+        }
+
+        if (_quickLookOpen && _quickLookNeedsFocus)
+        {
+            _quickLookNeedsFocus = false;
+            await _quickLookDialog.FocusAsync();
+        }
+
+        if (_columnToFocusAfterRender is not null && _listNavigationModule is not null)
+        {
+            var columnName = _columnToFocusAfterRender;
+            _columnToFocusAfterRender = null;
+            await _listNavigationModule.InvokeVoidAsync("focusColumn", columnName);
+        }
+
+        if (_infiniteScrollModule is not null &&
+            _dotNetReference is not null &&
+            _hasMoreDocuments &&
+            !_isLoadingDocuments &&
+            !_isLoadingMoreDocuments)
+        {
+            await _infiniteScrollModule.InvokeVoidAsync(
+                "attach",
+                _documentsScrollContainer,
+                _dotNetReference);
+        }
+
+    }
+
+    private async Task OnDocumentSearchInputAsync(ChangeEventArgs args)
+    {
+        _documentFilter = args.Value?.ToString() ?? string.Empty;
+        var requestSearchVersion = ++_documentSearchVersion;
+        await RefreshDocumentSearchAsync(requestSearchVersion, _documentFilter);
+    }
+
+    private async Task RefreshDocumentSearchAsync()
+    {
+        var requestSearchVersion = ++_documentSearchVersion;
+        await RefreshDocumentSearchAsync(requestSearchVersion, _documentFilter);
+    }
+
+    private async Task RefreshDocumentSearchAsync(
+        int requestSearchVersion,
+        string requestedFilter)
+    {
+        _documentPage = 1;
+
+        _hybridDocumentSearchCancellation?.Cancel();
+        _hybridDocumentSearchCancellation?.Dispose();
+        _hybridDocumentSearchCancellation = new CancellationTokenSource();
+        var cancellationToken = _hybridDocumentSearchCancellation.Token;
+
+        try
+        {
+            // Lokale und API-Suche verwenden dieselbe kurze Tipp-Pause.
+            // Jede neuere Eingabe bricht diesen Lauf unmittelbar ab.
+            await Task.Delay(275, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (requestSearchVersion != _documentSearchVersion ||
+                !string.Equals(requestedFilter, _documentFilter, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(requestedFilter))
+            {
+                _isSearchingDocuments = false;
+
+                if (_documentsAscending == _normalDocumentsAscending)
+                {
+                    RestoreNormalDocumentList();
+                    await InvokeAsync(StateHasChanged);
+                }
+                else
+                {
+                    // Die Sortierung wurde während der Suche geändert.
+                    // Deshalb muss die normale Liste einmalig ab Seite 1
+                    // in der neuen Reihenfolge geladen werden.
+                    await InvokeAsync(StateHasChanged);
+                    await LoadAllDocumentsForCurrentSelectionAsync();
+                }
+
+                return;
+            }
+
+            var allNormalDocumentsLoaded =
+                _allDocumentsForCurrentSelection.Count == _normalDocumentTotalCount;
+
+            if (allNormalDocumentsLoaded)
+            {
+                _isSearchingDocuments = false;
+                ApplyLocalHybridTitleSearch();
+
+                if (requestSearchVersion == _documentSearchVersion)
+                {
+                    await InvokeAsync(StateHasChanged);
+                }
+
+                return;
+            }
+
+            _isSearchingDocuments = true;
+            await InvokeAsync(StateHasChanged);
+
+            await ApplyApiHybridTitleSearchAsync(cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (requestSearchVersion != _documentSearchVersion ||
+                !string.Equals(requestedFilter, _documentFilter, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Eine neuere Eingabe, ein Auswahlwechsel oder das Leeren
+            // des Feldes hat diese Suche ersetzt.
+        }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested &&
+                requestSearchVersion == _documentSearchVersion)
+            {
+                _isSearchingDocuments = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private void LogPaperlessError(
+        string action,
+        PaperlessErrorInfo error,
+        bool cacheContinues = false)
+    {
+        Logger.LogError(
+            "Paperless-Aktion fehlgeschlagen. Ereigniskennung: {EventId}; Aktion: {Action}; Kategorie: {Category}; HTTP-Status: {StatusCode}; Ausnahmetyp: {ExceptionType}; Zeitüberschreitung: {IsTimeout}; Bestehender Stand weiterverwendet: {CacheContinues}",
+            error.EventId,
+            action,
+            error.Category,
+            error.StatusCode,
+            error.ExceptionType,
+            error.IsTimeout,
+            cacheContinues);
+    }
+
+    private void RestoreNormalDocumentList()
+    {
+        _activeDocumentSearchResults = [];
+        _documentsById = _allDocumentsForCurrentSelection.ToDictionary(document => document.Id);
+        _documents = _allDocumentsForCurrentSelection.ToArray();
+        _totalCount = _normalDocumentTotalCount;
+        _hasMoreDocuments = _documents.Count < _normalDocumentTotalCount;
+        ReconcileSelectionWithVisibleDocuments();
+    }
+
+    private void ApplyLocalHybridTitleSearch()
+    {
+        var groups = ParseTitleSearchGroups(_documentFilter);
+        IEnumerable<DocumentListItemDto> source = _allDocumentsForCurrentSelection;
+
+        if (_documentsAscending != _normalDocumentsAscending)
+        {
+            source = source.Reverse();
+        }
+
+        _activeDocumentSearchResults = groups.Count == 0
+            ? []
+            : source
+                .Where(document => MatchesTitleSearch(document.Title, groups))
+                .ToArray();
+
+        ApplyActiveSearchResults();
+    }
+
+    private async Task ApplyApiHybridTitleSearchAsync(CancellationToken cancellationToken)
+    {
+        if (_selectedArea is null || _selectedCorrespondent is null || _selectedDocumentType is null)
+        {
+            return;
+        }
+
+        var groups = ParseTitleSearchGroups(_documentFilter);
+        if (groups.Count == 0)
+        {
+            _activeDocumentSearchResults = [];
+            ApplyActiveSearchResults();
+            return;
+        }
+
+        var client = GetPaperlessClient();
+        var candidates = new Dictionary<int, DocumentListItemDto>();
+
+        foreach (var term in groups.SelectMany(group => group).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var matches = await client.GetAllDocumentsAsync(
+                storagePathId: _selectedArea.StoragePathId > 0 ? _selectedArea.StoragePathId : null,
+                storagePathIds: GetSelectedPrivateStoragePathIds(),
+                storagePathIsNull: _selectedArea.StoragePathId == UnassignedAreaKey,
+                correspondentId: _selectedCorrespondent.Id > 0 ? _selectedCorrespondent.Id : null,
+                correspondentIds: GetSelectedPrivateCorrespondentIds(),
+                correspondentIsNull: _selectedCorrespondent.Id == UnassignedSelectionId,
+                documentTypeId: _selectedDocumentType.Id > 0 ? _selectedDocumentType.Id : null,
+                documentTypeIds: GetSelectedPrivateDocumentTypeIds(),
+                documentTypeIsNull: _selectedDocumentType.Id == UnassignedSelectionId,
+                sortAscending: _documentsAscending,
+                titleContains: term,
+                cancellationToken: cancellationToken);
+
+            foreach (var document in matches)
+            {
+                candidates[document.Id] = document;
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        _activeDocumentSearchResults = candidates.Values
+            .Where(document => MatchesTitleSearch(document.Title, groups))
+            .ToArray();
+        ApplyActiveSearchResults();
+    }
+
+    private void ApplyActiveSearchResults()
+    {
+        _activeDocumentSearchResults = (_documentsAscending
+            ? _activeDocumentSearchResults
+                .OrderBy(document => document.CreatedUtc)
+                .ThenBy(document => document.Id)
+            : _activeDocumentSearchResults
+                .OrderByDescending(document => document.CreatedUtc)
+                .ThenByDescending(document => document.Id))
+            .ToArray();
+
+        _documentsById = _activeDocumentSearchResults.ToDictionary(document => document.Id);
+        _totalCount = _activeDocumentSearchResults.Count;
+        _documents = _activeDocumentSearchResults.Take(DocumentsPerBatch).ToArray();
+        _hasMoreDocuments = _documents.Count < _totalCount;
+        ReconcileSelectionWithVisibleDocuments();
+    }
+
+    private void ReconcileSelectionWithVisibleDocuments()
+    {
+        if (_selectedDocument is null)
+        {
+            return;
+        }
+
+        var matchingSelection = _documents.FirstOrDefault(document => document.Id == _selectedDocument.Id);
+        if (matchingSelection is null)
+        {
+            ClearDocumentDetails();
+        }
+        else
+        {
+            _selectedDocument = matchingSelection;
+        }
+    }
+
+    private static IReadOnlyList<IReadOnlyList<string>> ParseTitleSearchGroups(string? searchText)
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+        {
+            return Array.Empty<IReadOnlyList<string>>();
+        }
+
+        return searchText
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(orGroup => (IReadOnlyList<string>)orGroup
+                .Split('&', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(term => !string.IsNullOrWhiteSpace(term))
+                .ToArray())
+            .Where(group => group.Count > 0)
+            .ToArray();
+    }
+
+    private static bool MatchesTitleSearch(
+        string? title,
+        IReadOnlyList<IReadOnlyList<string>> groups)
+    {
+        if (groups.Count == 0)
+        {
+            return true;
+        }
+
+        var searchableTitle = title ?? string.Empty;
+
+        return groups.Any(group =>
+            group.All(term => searchableTitle.Contains(
+                term,
+                StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private void OnLocalFilterInput(ChangeEventArgs args)
+    {
+        _localFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    private void OnDocumentTypeFilterInput(ChangeEventArgs args)
+    {
+        _documentTypeFilter = args.Value?.ToString() ?? string.Empty;
+    }
+
+    [JSInvokable]
+    public async Task SelectBrowserDocumentAsync(int documentId)
+    {
+        if (_documentsById.TryGetValue(documentId, out var document))
+        {
+            await SelectDocumentAsync(document);
+        }
+    }
+
+    [JSInvokable]
+    public async Task OpenBrowserQuickLookAsync(int documentId)
+    {
+        if (!_documentsById.TryGetValue(documentId, out var document))
+        {
+            return;
+        }
+
+        // Auswahl und Quick Look sofort sichtbar machen. Das Laden der
+        // Metadaten läuft anschließend weiter und darf das Öffnen nicht blockieren.
+        var selectionTask = SelectDocumentAsync(document);
+        OpenQuickLook();
+        await InvokeAsync(StateHasChanged);
+        await selectionTask;
+    }
+
+    private async Task HandleAreaKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (IsSpaceKey(args))
+        {
+            if (_areasCollapsed) ExpandAreas();
+            else CollapseAreas();
+            return;
+        }
+
+        if (await HandleListNavigationAsync(args, SortedAreas, _selectedArea,
+                area => area.StoragePathId, SelectAreaAsync, AreaElementId, "area", "correspondent")) return;
+        await HandleTypeAheadAsync(args, SortedAreas, area => DisplayAreaName(area.DisplayName), SelectAreaAsync, AreaElementId);
+    }
+
+    private async Task HandleCorrespondentKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (IsSpaceKey(args))
+        {
+            if (_correspondentsCollapsed) ExpandCorrespondents();
+            else CollapseCorrespondents();
+            return;
+        }
+
+        if (await HandleListNavigationAsync(args, FilteredCorrespondents, _selectedCorrespondent,
+                item => item.Id, item => { SelectCorrespondent(item); return Task.CompletedTask; }, CorrespondentElementId,
+                "correspondent", "document-type")) return;
+        await HandleTypeAheadAsync(args, FilteredCorrespondents.Where(item => item.Id > 0).ToArray(),
+            item => DisplayCorrespondentName(item.Name), item => { SelectCorrespondent(item); return Task.CompletedTask; }, CorrespondentElementId);
+    }
+
+    private async Task HandleDocumentTypeKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (IsSpaceKey(args))
+        {
+            if (_documentTypesCollapsed) ExpandDocumentTypes();
+            else CollapseDocumentTypes();
+            return;
+        }
+
+        if (await HandleListNavigationAsync(args, FilteredDocumentTypes, _selectedDocumentType,
+                item => item.Id, LoadDocumentsAsync, DocumentTypeElementId, "document-type", "document")) return;
+        await HandleTypeAheadAsync(args, FilteredDocumentTypes.Where(item => item.Id > 0).ToArray(),
+            item => DisplayDocumentTypeName(item.Name), LoadDocumentsAsync, DocumentTypeElementId);
+    }
+
+    private static bool IsSpaceKey(KeyboardEventArgs args)
+        => args.Key == " " || args.Key == "Spacebar" || args.Code == "Space";
+
+    private async Task HandleDocumentKeyDownAsync(KeyboardEventArgs args)
+    {
+        if (IsSpaceKey(args) && _selectedDocument is not null)
+        {
+            ToggleDocumentInspector();
+            return;
+        }
+        if (args.Key == "ArrowLeft" && _listNavigationModule is not null)
+        {
+            await _listNavigationModule.InvokeVoidAsync("focusAdjacentColumn", "document", -1);
+            return;
+        }
+        if (_documents.Count == 0) return;
+        var index = _selectedDocument is null ? -1 : _documents.ToList().FindIndex(d => d.Id == _selectedDocument.Id);
+        if (args.Key == "ArrowDown") index = Math.Min(_documents.Count - 1, index + 1);
+        else if (args.Key == "ArrowUp") index = Math.Max(0, index < 0 ? 0 : index - 1);
+        else if (args.Key == "Home") index = 0;
+        else if (args.Key == "End") index = _documents.Count - 1;
+        else return;
+        await SelectDocumentAsync(_documents[index]);
+        if (_listNavigationModule is not null) await _listNavigationModule.InvokeVoidAsync("scrollTo", DocumentElementId(_documents[index]));
+    }
+
+    private async Task<bool> HandleListNavigationAsync<T>(KeyboardEventArgs args, IReadOnlyList<T> items, T? selected,
+        Func<T, int> id, Func<T, Task> select, Func<T, string> elementId, string currentColumn, string nextColumn) where T : class
+    {
+        if (args.Key == "ArrowRight" && _listNavigationModule is not null)
+        {
+            await _listNavigationModule.InvokeVoidAsync("focusAdjacentColumn", currentColumn, 1); return true;
+        }
+        if (args.Key == "ArrowLeft" && _listNavigationModule is not null)
+        {
+            await _listNavigationModule.InvokeVoidAsync("focusAdjacentColumn", currentColumn, -1); return true;
+        }
+        if (items.Count == 0) return false;
+        var index = selected is null ? -1 : items.ToList().FindIndex(x => id(x) == id(selected));
+        if (args.Key == "ArrowDown") index = Math.Min(items.Count - 1, index + 1);
+        else if (args.Key == "ArrowUp") index = Math.Max(0, index < 0 ? 0 : index - 1);
+        else if (args.Key == "Home") index = 0;
+        else if (args.Key == "End") index = items.Count - 1;
+        else return false;
+        await select(items[index]);
+        if (_listNavigationModule is not null) await _listNavigationModule.InvokeVoidAsync("scrollTo", elementId(items[index]));
+        return true;
+    }
+
+    private async Task HandleTypeAheadAsync<T>(
+        KeyboardEventArgs args,
+        IReadOnlyList<T> items,
+        Func<T, string> displayName,
+        Func<T, Task> select,
+        Func<T, string> elementId)
+    {
+        if (args.CtrlKey || args.MetaKey || args.AltKey ||
+            string.IsNullOrEmpty(args.Key) || args.Key.Length != 1 ||
+            char.IsControl(args.Key[0]))
+            return;
+
+        var now = DateTimeOffset.UtcNow;
+        _typeAheadBuffer = now - _lastTypeAheadInput > TypeAheadTimeout
+            ? args.Key
+            : _typeAheadBuffer + args.Key;
+        _lastTypeAheadInput = now;
+
+        var match = items.FirstOrDefault(item =>
+            displayName(item).StartsWith(
+                _typeAheadBuffer,
+                StringComparison.CurrentCultureIgnoreCase));
+
+        if (match is null)
+            return;
+
+        await select(match);
+        if (_listNavigationModule is not null)
+        {
+            await _listNavigationModule.InvokeVoidAsync("scrollTo", elementId(match));
+        }
+    }
+
+    private void CollapseAreas()
+    {
+        if (_selectedArea is null) return;
+        _areasCollapsed = true;
+        _columnToFocusAfterRender = "area";
+    }
+
+    private void ExpandAreas()
+    {
+        _areasCollapsed = false;
+        _columnToFocusAfterRender = "area";
+    }
+
+    private void CollapseCorrespondents()
+    {
+        if (_selectedCorrespondent is null) return;
+        _correspondentsCollapsed = true;
+        _columnToFocusAfterRender = "correspondent";
+    }
+
+    private void ExpandCorrespondents()
+    {
+        _correspondentsCollapsed = false;
+        _columnToFocusAfterRender = "correspondent";
+    }
+
+    private void CollapseDocumentTypes()
+    {
+        if (_selectedDocumentType is null) return;
+        _documentTypesCollapsed = true;
+        _columnToFocusAfterRender = "document-type";
+    }
+
+    private void ExpandDocumentTypes()
+    {
+        _documentTypesCollapsed = false;
+        _columnToFocusAfterRender = "document-type";
+    }
+
+    private void ToggleAreaSort() => _areasDescending = !_areasDescending;
+    private void ToggleCorrespondentSort() => _correspondentsDescending = !_correspondentsDescending;
+    private void ToggleDocumentTypeSort() => _documentTypesDescending = !_documentTypesDescending;
+    private async Task ToggleDocumentSortAsync()
+    {
+        _documentsAscending = !_documentsAscending;
+
+        if (_selectedDocumentType is null)
+        {
+            return;
+        }
+
+        _hybridDocumentSearchCancellation?.Cancel();
+
+        if (string.IsNullOrWhiteSpace(_documentFilter))
+        {
+            // Ohne aktive Suche wird die normale Liste in der neuen
+            // Reihenfolge kontrolliert ab Seite 1 geladen.
+            await LoadAllDocumentsForCurrentSelectionAsync();
+            return;
+        }
+
+        // Während einer Suche bleibt der normale Listenbestand unangetastet.
+        // Nur die Suchansicht wird mit der neuen Sortierung erneut erzeugt.
+        await RefreshDocumentSearchAsync();
+    }
+
+    private void ToggleDocumentInspector()
+    {
+        _documentInspectorOpen = !_documentInspectorOpen;
+    }
+
+    private void OpenQuickLook()
+    {
+        if (_selectedDocument is null) return;
+        _quickLookOpen = true;
+        _quickLookNeedsFocus = true;
+    }
+
+    private void CloseQuickLook()
+    {
+        _quickLookOpen = false;
+        _quickLookNeedsFocus = false;
+        _columnToFocusAfterRender = "document";
+    }
+
+    [JSInvokable]
+    public void CloseQuickLookFromOutsideClick()
+    {
+        _quickLookOpen = false;
+        _quickLookNeedsFocus = false;
+        StateHasChanged();
+    }
+
+    private void HandleQuickLookKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Escape")
+        {
+            CloseQuickLook();
+        }
+    }
+
+
+    private async Task ReconcileSelectedDocumentAfterReloadAsync(
+        int? selectedDocumentIdBeforeReload,
+        int requestSearchVersion)
+    {
+        if (!selectedDocumentIdBeforeReload.HasValue ||
+            requestSearchVersion != _documentSearchVersion ||
+            _selectedDocument?.Id != selectedDocumentIdBeforeReload.Value)
+        {
+            return;
+        }
+
+        var refreshedDocument = _allDocumentsForCurrentSelection.FirstOrDefault(
+            document => document.Id == selectedDocumentIdBeforeReload.Value);
+
+        if (refreshedDocument is null)
+        {
+            // Das Dokument wurde gelöscht oder gehört nach einer Zuordnungsänderung
+            // nicht mehr zur aktuell ausgewählten Kombination.
+            ClearDocumentDetails();
+            _columnToFocusAfterRender = "document";
+            return;
+        }
+
+        // Das Dokument ist weiterhin vorhanden. Auswahl, Tags, benutzerdefinierte
+        // Felder und Detaildaten werden auf das neu geladene Objekt umgestellt.
+        await SelectDocumentAsync(refreshedDocument);
+    }
+
+    private void CloseDocumentInspectorInternal()
+    {
+        CloseDocumentInspector(new FocusEventArgs());
+    }
+
+    private void CloseDocumentInspector(FocusEventArgs _)
+    {
+        if (_documentInspectorOpen)
+        {
+            _documentInspectorOpen = false;
+        }
+
+        if (_quickLookOpen)
+        {
+            _quickLookOpen = false;
+            _quickLookNeedsFocus = false;
+        }
+    }
+
+    private async Task SelectDocumentAsync(DocumentListItemDto document)
+    {
+        var keepQuickLookOpen = _quickLookOpen;
+        _selectedDocument = document;
+        _quickLookNeedsFocus = keepQuickLookOpen;
+        _documentDetails = null;
+        _documentDetailsError = null;
+        _thumbnailFailed = false;
+
+        _documentDetailsCancellation?.Cancel();
+        _documentDetailsCancellation?.Dispose();
+        _documentDetailsCancellation = new CancellationTokenSource();
+        var cancellationToken = _documentDetailsCancellation.Token;
+
+        _isLoadingDocumentDetails = true;
+
+        // v9.65.5: Die Auswahl und damit der Vorschau-Pfeil sollen sofort
+        // sichtbar werden. Das Nachladen der Metadaten läuft anschließend
+        // weiter und darf die Anzeige der Auswahl nicht verzögern.
+        StateHasChanged();
+        await Task.Yield();
+
+        try
+        {
+            var client = GetPaperlessClient();
+            var details = await client.GetDocumentAsync(document.Id, cancellationToken);
+
+            if (!cancellationToken.IsCancellationRequested &&
+                _selectedDocument?.Id == document.Id)
+            {
+                _documentDetails = details;
+                if (details is null)
+                {
+                    _documentDetailsError = "Für dieses Dokument wurden keine Metadaten geliefert.";
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Ein schneller Dokumentwechsel verwirft die vorherige Anfrage.
+        }
+        catch
+        {
+            if (!cancellationToken.IsCancellationRequested &&
+                _selectedDocument?.Id == document.Id)
+            {
+                _documentDetailsError = "Die Metadaten konnten nicht geladen werden.";
+            }
+        }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested &&
+                _selectedDocument?.Id == document.Id)
+            {
+                _isLoadingDocumentDetails = false;
+            }
+        }
+    }
+
+    private void ClearDocumentDetails()
+    {
+        _documentDetailsCancellation?.Cancel();
+        _documentDetailsCancellation?.Dispose();
+        _documentDetailsCancellation = null;
+        _selectedDocument = null;
+        _documentDetails = null;
+        _documentDetailsError = null;
+        _thumbnailFailed = false;
+        _documentInspectorOpen = false;
+        _isLoadingDocumentDetails = false;
+    }
+
+    private static string GetThumbnailUrl(int documentId) =>
+        $"/preview/documents/{documentId}/thumbnail";
+
+    private static string GetDocumentPreviewUrl(int documentId) =>
+        $"/preview/documents/{documentId}/document";
+
+    private void HandleThumbnailError()
+    {
+        _thumbnailFailed = true;
+    }
+
+    private IReadOnlyList<DisplayedCustomField> GetSelectedDocumentCustomFields()
+    {
+        if (_selectedDocument is null || _selectedDocument.CustomFields.Count == 0)
+        {
+            return [];
+        }
+
+        var definitions = _allCustomFields.ToDictionary(field => field.Id);
+        var result = new List<DisplayedCustomField>();
+
+        foreach (var value in _selectedDocument.CustomFields)
+        {
+            if (!definitions.TryGetValue(value.FieldId, out var definition))
+            {
+                continue;
+            }
+
+            var displayValue = FormatCustomFieldValue(definition, value.Value);
+            result.Add(new DisplayedCustomField(
+                definition.Name,
+                displayValue ?? string.Empty,
+                string.IsNullOrWhiteSpace(displayValue)));
+        }
+
+        return result
+            .OrderBy(field => field.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
+
+    private static string? FormatCustomFieldValue(CustomFieldDto field, object? rawValue)
+    {
+        if (rawValue is null)
+        {
+            return null;
+        }
+
+        var value = rawValue is JsonElement element
+            ? element
+            : JsonSerializer.SerializeToElement(rawValue);
+
+        if (value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return field.DataType.ToLowerInvariant() switch
+        {
+            "boolean" or "bool" => value.ValueKind == JsonValueKind.True
+                ? "Ja"
+                : value.ValueKind == JsonValueKind.False
+                    ? "Nein"
+                    : value.ToString(),
+            "date" => DateOnly.TryParse(value.ToString(), out var date)
+                ? date.ToString("dd.MM.yyyy")
+                : value.ToString(),
+            "select" => GetSelectLabel(field, value.ToString()),
+            "documentlink" => FormatDocumentLinks(value),
+            "monetary" => FormatMonetaryValue(value.ToString()),
+            _ => FormatJsonValue(value)
+        };
+    }
+
+    private static string? GetSelectLabel(CustomFieldDto field, string selectedId)
+    {
+        if (field.ExtraData.ValueKind == JsonValueKind.Object &&
+            field.ExtraData.TryGetProperty("select_options", out var options) &&
+            options.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var option in options.EnumerateArray())
+            {
+                if (option.TryGetProperty("id", out var id) &&
+                    id.ToString() == selectedId &&
+                    option.TryGetProperty("label", out var label))
+                {
+                    return label.ToString();
+                }
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(selectedId) ? null : selectedId;
+    }
+
+    private static string? FormatDocumentLinks(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return FormatJsonValue(value);
+        }
+
+        var ids = value.EnumerateArray()
+            .Select(item => item.ToString())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .ToArray();
+
+        return ids.Length == 0
+            ? null
+            : string.Join(", ", ids.Select(id => $"Dokument {id}"));
+    }
+
+    private static string? FormatMonetaryValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (value.Length > 3 && char.IsLetter(value[0]) &&
+            char.IsLetter(value[1]) && char.IsLetter(value[2]))
+        {
+            return $"{value[3..]} {value[..3]}";
+        }
+
+        return value;
+    }
+
+    private static string? FormatJsonValue(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => string.IsNullOrWhiteSpace(value.GetString())
+                ? null
+                : value.GetString(),
+            JsonValueKind.Number => FormatJsonNumber(value),
+            JsonValueKind.True => "Ja",
+            JsonValueKind.False => "Nein",
+            JsonValueKind.Array => string.Join(", ", value.EnumerateArray().Select(item => item.ToString())),
+            JsonValueKind.Object => value.ToString(),
+            _ => null
+        };
+    }
+
+    private static string FormatJsonNumber(JsonElement value)
+    {
+        var culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+
+        if (value.TryGetInt64(out var integer))
+        {
+            return integer.ToString(culture);
+        }
+
+        if (value.TryGetDecimal(out var number))
+        {
+            return number == decimal.Truncate(number)
+                ? decimal.Truncate(number).ToString("0", culture)
+                : number.ToString("0.############################", culture);
+        }
+
+        if (value.TryGetDouble(out var floatingPointNumber))
+        {
+            return Math.Abs(floatingPointNumber - Math.Truncate(floatingPointNumber)) < 0.0000000001
+                ? Math.Truncate(floatingPointNumber).ToString("0", culture)
+                : floatingPointNumber.ToString("0.################", culture);
+        }
+
+        return value.ToString();
+    }
+
+    private sealed record DisplayedCustomField(string Name, string DisplayValue, bool IsEmpty);
+
+    private IReadOnlyList<TagDto> GetSelectedDocumentTags()
+    {
+        if (_selectedDocument is null || _selectedDocument.TagIds.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = _selectedDocument.TagIds.ToHashSet();
+        return _allTags
+            .Where(tag => ids.Contains(tag.Id))
+            .OrderBy(tag => tag.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
+
+    private static string GetTagStyle(TagDto tag)
+    {
+        var background = NormalizeTagColor(tag.Color);
+        var foreground = GetReadableTagTextColor(background);
+        return $"background-color: {background}; color: {foreground};";
+    }
+
+    private static string NormalizeTagColor(string? color)
+    {
+        if (string.IsNullOrWhiteSpace(color))
+        {
+            return "#e4e7ec";
+        }
+
+        var value = color.Trim();
+        if (value.Length == 7 && value[0] == '#' &&
+            value.Skip(1).All(Uri.IsHexDigit))
+        {
+            return value;
+        }
+
+        return "#e4e7ec";
+    }
+
+    private static string GetReadableTagTextColor(string background)
+    {
+        var red = Convert.ToInt32(background.Substring(1, 2), 16);
+        var green = Convert.ToInt32(background.Substring(3, 2), 16);
+        var blue = Convert.ToInt32(background.Substring(5, 2), 16);
+        var luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue);
+        return luminance >= 150 ? "#101828" : "#ffffff";
+    }
+
+    private string GetCorrespondentName(int? id)
+    {
+        if (!id.HasValue) return "Nicht zugewiesen";
+        var item = _allCorrespondents.FirstOrDefault(value => value.Id == id.Value);
+        return item is null ? "Privat" : DisplayCorrespondentName(item.Name);
+    }
+
+    private string GetDocumentTypeName(int? id)
+    {
+        if (!id.HasValue) return "Nicht zugewiesen";
+        var item = _allDocumentTypes.FirstOrDefault(value => value.Id == id.Value);
+        return item is null ? "Privat" : DisplayDocumentTypeName(item.Name);
+    }
+
+    private void ApplyStoragePaths(
+        IReadOnlyList<StoragePathDto> storagePaths)
+    {
+        var previousSelectedStoragePathId =
+            _selectedArea?.StoragePathId;
+
+        var dynamicAreas = storagePaths
+            .Where(item =>
+                item.Id > 0 &&
+                !string.IsNullOrWhiteSpace(item.Name))
+            .GroupBy(item => item.Id)
+            .Select(group => group.First())
+            .OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(item => item.Id)
+            .Select(item => new AreaDefinition(
+                item.Id,
+                item.Name.Trim(),
+                string.Empty))
+            .ToArray();
+
+        _areas =
+        [
+            new AreaDefinition(
+                UnassignedAreaKey,
+                "Nicht zugewiesen",
+                "ohne Speicherpfad"),
+            .. dynamicAreas
+        ];
+
+        if (!previousSelectedStoragePathId.HasValue)
+        {
+            return;
+        }
+
+        _selectedArea = _areas.FirstOrDefault(area =>
+            area.StoragePathId == previousSelectedStoragePathId.Value);
+
+        if (_selectedArea is null)
+        {
+            _selectedCorrespondent = null;
+            _selectedDocumentType = null;
+            _selectedDocument = null;
+            _currentIndex = null;
+            _areaCorrespondents = [];
+            _documentTypes = [];
+            _documents = [];
+            _totalCount = 0;
+            CloseDocumentInspectorInternal();
+        }
+    }
+
+    private void RebuildAreasForSnapshot(NavigationCacheSnapshot snapshot)
+    {
+        var readableIds = _areas.Where(area => area.StoragePathId > 0)
+            .Select(area => area.StoragePathId).ToHashSet();
+        var hasPrivate = snapshot.Documents.Any(document =>
+            document.StoragePathId.HasValue && !readableIds.Contains(document.StoragePathId.Value));
+
+        _areas = hasPrivate
+            ? [.. _areas.Where(area => area.StoragePathId != PrivateAreaKey), PrivateArea]
+            : [.. _areas.Where(area => area.StoragePathId != PrivateAreaKey)];
+    }
+
+    private IReadOnlyCollection<int>? GetSelectedPrivateStoragePathIds()
+    {
+        if (_selectedArea?.StoragePathId != PrivateAreaKey || _navigationSnapshot is null) return null;
+        var readable = _areas.Where(area => area.StoragePathId > 0)
+            .Select(area => area.StoragePathId).ToHashSet();
+        return _navigationSnapshot.Documents
+            .Where(document => document.StoragePathId.HasValue && !readable.Contains(document.StoragePathId.Value))
+            .Select(document => document.StoragePathId!.Value).Distinct().ToArray();
+    }
+
+    private IReadOnlyCollection<int>? GetSelectedPrivateCorrespondentIds()
+    {
+        if (_selectedCorrespondent?.Id != PrivateSelectionId || _currentIndex is null) return null;
+        var readable = _allCorrespondents.Select(item => item.Id).ToHashSet();
+        return _currentIndex.CorrespondentIds.Where(id => !readable.Contains(id)).ToArray();
+    }
+
+    private IReadOnlyCollection<int>? GetSelectedPrivateDocumentTypeIds()
+    {
+        if (_selectedDocumentType?.Id != PrivateSelectionId) return null;
+        var readable = _allDocumentTypes.Select(item => item.Id).ToHashSet();
+        return DocumentsForSelectedArea()
+            .Where(document => document.DocumentTypeId.HasValue && !readable.Contains(document.DocumentTypeId.Value))
+            .Where(document => _selectedCorrespondent?.Id switch
+            {
+                AllSelectionId => true,
+                UnassignedSelectionId => !document.CorrespondentId.HasValue,
+                PrivateSelectionId => document.CorrespondentId.HasValue &&
+                    !_allCorrespondents.Any(item => item.Id == document.CorrespondentId.Value),
+                > 0 => document.CorrespondentId == _selectedCorrespondent.Id,
+                _ => false
+            })
+            .Select(document => document.DocumentTypeId!.Value).Distinct().ToArray();
+    }
+
+    private string GetStoragePathName(int? id)
+    {
+        if (!id.HasValue) return "Nicht zugewiesen";
+        var area = _areas.FirstOrDefault(value => value.StoragePathId == id.Value);
+        return area is null ? "Privat" : DisplayAreaName(area.DisplayName);
+    }
+
+    private static string DisplayMetadataValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? "–" : value;
+
+    private static string FormatMetadataDate(DateTimeOffset? value) =>
+        value.HasValue
+            ? value.Value.ToLocalTime().ToString("dd.MM.yyyy, HH:mm")
+            : "–";
+
+    private static string FormatQuickLookNoteInfo(DocumentNoteDto note)
+    {
+        var author = FormatQuickLookNoteAuthor(note.User);
+        var created = note.CreatedUtc.HasValue
+            ? note.CreatedUtc.Value.ToLocalTime().ToString("dd.MM.yyyy")
+            : string.Empty;
+        return $"{author} - {created}";
+    }
+
+    private static string FormatQuickLookNoteAuthor(DocumentNoteUserDto? user)
+    {
+        if (user is null)
+        {
+            return string.Empty;
+        }
+
+        var fullName = string.Join(
+            " ",
+            new[] { user.FirstName, user.LastName }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim()));
+        var username = user.Username?.Trim() ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(fullName) && !string.IsNullOrWhiteSpace(username))
+        {
+            return $"{fullName} ({username})";
+        }
+
+        return !string.IsNullOrWhiteSpace(fullName)
+            ? fullName
+            : username;
+    }
+
+    private static string SortArrow(bool descending) => descending ? "↓" : "↑";
+    private static string CollapsedClass(bool collapsed) => collapsed ? "collapsed" : string.Empty;
+    private static string DocumentElementId(DocumentListItemDto item) => $"document-{item.Id}";
+    private string SelectedDocumentClass(DocumentListItemDto item) => _selectedDocument?.Id == item.Id ? "selected" : string.Empty;
+
+    private static string AreaElementId(AreaDefinition area) => $"area-{area.StoragePathId}";
+    private static string CorrespondentElementId(CorrespondentDto item) => $"correspondent-{item.Id}";
+    private static string DocumentTypeElementId(DocumentTypeDto item) => $"document-type-{item.Id}";
+
+    public async ValueTask DisposeAsync()
+    {
+        DisplayPrefixes.Changed -= HandleDisplayPrefixesChanged;
+        _hybridDocumentSearchCancellation?.Cancel();
+        _hybridDocumentSearchCancellation?.Dispose();
+        _documentDetailsCancellation?.Cancel();
+        _documentDetailsCancellation?.Dispose();
+        StopSyncStatusUpdates();
+        _centralSyncRegistration?.Dispose();
+
+        if (_listNavigationModule is not null)
+        {
+            try
+            {
+                await _listNavigationModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_previewResizeModule is not null)
+        {
+            try
+            {
+                await _previewResizeModule.InvokeVoidAsync("disconnect");
+                await _previewResizeModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_quickLookPdfModule is not null)
+        {
+            try
+            {
+                await _quickLookPdfModule.InvokeVoidAsync("disconnect");
+                await _quickLookPdfModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_quickLookResizeModule is not null)
+        {
+            try
+            {
+                await _quickLookResizeModule.InvokeVoidAsync("disconnect");
+                await _quickLookResizeModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_columnResizeModule is not null)
+        {
+            try
+            {
+                await _columnResizeModule.InvokeVoidAsync("disconnect");
+                await _columnResizeModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_documentLoadFooterModule is not null)
+        {
+            try
+            {
+                await _documentLoadFooterModule.InvokeVoidAsync("disconnect");
+                await _documentLoadFooterModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+        if (_infiniteScrollModule is not null)
+        {
+            try
+            {
+                await _infiniteScrollModule.InvokeVoidAsync("disconnect");
+                await _infiniteScrollModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Browser-Verbindung wurde bereits beendet.
+            }
+        }
+
+
+        _dotNetReference?.Dispose();
+    }
+
+
+    private sealed record BrowserSearchDocument(int Id, string Title, string Detail, string PaperlessUrl);
+
+    private void HandleDisplayPrefixesChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string DisplayAreaName(string name) =>
+        DisplayPrefixes.ApplyArea(name);
+
+    private string DisplayCorrespondentName(string name) =>
+        DisplayPrefixes.ApplyCorrespondent(name);
+
+    private string DisplayDocumentTypeName(string name) =>
+        DisplayPrefixes.ApplyDocumentType(name);
+
+    private string DisplayDocumentName(string? name) =>
+        string.IsNullOrEmpty(name) ? name ?? string.Empty : DisplayPrefixes.ApplyDocument(name);
+
+    private IEnumerable<NavigationDocumentDto> DocumentsForArea(AreaDefinition area)
+    {
+        if (_navigationSnapshot is null) return [];
+
+        var readableIds = _areas.Where(item => item.StoragePathId > 0)
+            .Select(item => item.StoragePathId).ToHashSet();
+
+        return area.StoragePathId switch
+        {
+            AllAreaKey => _navigationSnapshot.Documents,
+            PrivateAreaKey => _navigationSnapshot.Documents.Where(document =>
+                document.StoragePathId.HasValue && !readableIds.Contains(document.StoragePathId.Value)),
+            UnassignedAreaKey => _navigationSnapshot.Documents.Where(document => !document.StoragePathId.HasValue),
+            _ => _navigationSnapshot.Documents.Where(document => document.StoragePathId == area.StoragePathId)
+        };
+    }
+
+    private int GetAreaDocumentCount(AreaDefinition area) =>
+        DocumentsForArea(area).Count();
+
+    private int GetAreaCorrespondentCount(AreaDefinition area) =>
+        DocumentsForArea(area)
+            .Where(document => document.CorrespondentId.HasValue)
+            .Select(document => document.CorrespondentId!.Value)
+            .Distinct()
+            .Count();
+
+    private IEnumerable<NavigationDocumentDto> DocumentsForSelectedArea()
+    {
+        return _selectedArea is null ? [] : DocumentsForArea(_selectedArea);
+    }
+
+    private int GetCorrespondentRowCount(CorrespondentDto correspondent)
+    {
+        var documents = DocumentsForSelectedArea();
+        return correspondent.Id switch
+        {
+            AllSelectionId => documents.Count(),
+            UnassignedSelectionId => documents.Count(document => !document.CorrespondentId.HasValue),
+            PrivateSelectionId => documents.Count(document => document.CorrespondentId.HasValue &&
+                !_allCorrespondents.Any(item => item.Id == document.CorrespondentId.Value)),
+            _ => documents
+                .Where(document => document.CorrespondentId == correspondent.Id && document.DocumentTypeId.HasValue)
+                .Select(document => document.DocumentTypeId!.Value)
+                .Distinct()
+                .Count()
+        };
+    }
+
+    private string FormatCorrespondentCount(CorrespondentDto correspondent)
+    {
+        var count = GetCorrespondentRowCount(correspondent);
+        return correspondent.Id > 0
+            ? $"{count:N0} {(count == 1 ? "Dokumenttyp" : "Dokumenttypen")}"
+            : FormatDocumentCount(count);
+    }
+
+    private static string FormatCorrespondentNumber(int count)
+        => $"{count:N0} {(count == 1 ? "Korrespondent" : "Korrespondenten")}";
+
+    private static string FormatDocumentCount(int count)
+        => $"{count:N0} {(count == 1 ? "Dokument" : "Dokumente")}";
+
+    private int GetDocumentTypeDocumentCount(DocumentTypeDto documentType)
+    {
+        var documents = DocumentsForSelectedArea();
+        if (_selectedCorrespondent is not null)
+        {
+            documents = _selectedCorrespondent.Id switch
+            {
+                AllSelectionId => documents,
+                UnassignedSelectionId => documents.Where(document => !document.CorrespondentId.HasValue),
+                PrivateSelectionId => documents.Where(document => document.CorrespondentId.HasValue &&
+                    !_allCorrespondents.Any(item => item.Id == document.CorrespondentId.Value)),
+                _ => documents.Where(document => document.CorrespondentId == _selectedCorrespondent.Id)
+            };
+        }
+
+        return documentType.Id switch
+        {
+            AllSelectionId => documents.Count(),
+            UnassignedSelectionId => documents.Count(document => !document.DocumentTypeId.HasValue),
+            PrivateSelectionId => documents.Count(document => document.DocumentTypeId.HasValue &&
+                !_allDocumentTypes.Any(item => item.Id == document.DocumentTypeId.Value)),
+            _ => documents.Count(document => document.DocumentTypeId == documentType.Id)
+        };
+    }
+
+    private string GetPaperlessDocumentUrl(int documentId)
+    {
+        if (string.IsNullOrWhiteSpace(_paperlessBaseUrl))
+        {
+            throw new InvalidOperationException(
+                "Die Paperless-Basisadresse ist für diese Sitzung nicht verfügbar.");
+        }
+
+        return $"{_paperlessBaseUrl}/documents/{documentId}/details";
+    }
+
+    private string BuildCompletedNavigationStatus(
+        string prefix,
+        int documentCount,
+        string durationText,
+        DateTimeOffset checkedAtUtc)
+    {
+        var checkedAtLocal = checkedAtUtc.ToLocalTime();
+        var nextCheckLocal = checkedAtLocal.Add(TimeSpan.FromSeconds(15));
+
+        return $"{prefix} · {documentCount:N0} Dokumente · " +
+               $"Letzte Prüfung {durationText} am {checkedAtLocal:dd.MM.} um {checkedAtLocal:HH:mm:ss} · " +
+               $"nächste um {nextCheckLocal:HH:mm:ss}";
+    }
+
+    private string NavigationStatusText => _isRefreshingNavigation && _syncStartedAt.HasValue
+        ? _syncElapsedSeconds >= 15
+            ? $"{_navigationStatus} {_syncElapsedSeconds} Sekunden · Paperless verarbeitet möglicherweise neue Dokumente"
+            : $"{_navigationStatus} {_syncElapsedSeconds} Sekunden"
+        : _navigationStatus;
+
+    private void StartSyncStatusUpdates()
+    {
+        StopSyncStatusUpdates();
+        _syncStatusCancellation = new CancellationTokenSource();
+        _syncStatusTask = UpdateSyncStatusAsync(_syncStatusCancellation.Token);
+    }
+
+    private void StopSyncStatusUpdates()
+    {
+        if (_syncStatusCancellation is null) return;
+        _syncStatusCancellation.Cancel();
+        _syncStatusCancellation.Dispose();
+        _syncStatusCancellation = null;
+    }
+
+    private async Task UpdateSyncStatusAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                if (!_syncStartedAt.HasValue) continue;
+                _syncElapsedSeconds = Math.Max(0, (int)(DateTimeOffset.UtcNow - _syncStartedAt.Value).TotalSeconds);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private string FormatSyncDuration()
+    {
+        if (!_syncStartedAt.HasValue) return "abgeschlossen";
+        var seconds = Math.Max(0.1, (DateTimeOffset.UtcNow - _syncStartedAt.Value).TotalSeconds);
+        return $"in {seconds:0.0} Sekunden";
+    }
+
+    private static string FormatLocalTime(
+        DateTimeOffset timestamp)
+    {
+        return timestamp
+            .ToLocalTime()
+            .ToString("dd.MM. HH:mm:ss");
+    }
+
+    private string SelectedAreaClass(AreaDefinition area) =>
+        _selectedArea?.StoragePathId == area.StoragePathId
+            ? "selected"
+            : string.Empty;
+
+    private string SelectedCorrespondentClass(CorrespondentDto correspondent) =>
+        _selectedCorrespondent?.Id == correspondent.Id
+            ? "selected"
+            : string.Empty;
+
+    private string SelectedDocumentTypeClass(DocumentTypeDto documentType) =>
+        _selectedDocumentType?.Id == documentType.Id
+            ? "selected"
+            : string.Empty;
+
+    private sealed record AreaDefinition(
+        int StoragePathId,
+        string DisplayName,
+        string PaperlessName);
+}

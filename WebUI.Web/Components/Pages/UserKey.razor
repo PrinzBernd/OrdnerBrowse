@@ -1,0 +1,65 @@
+@page "/auth/user-key"
+@using Microsoft.AspNetCore.Components.Authorization
+@using WebUI.Web.Services
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Pseudonymer Benutzerschlüssel</PageTitle>
+
+<section class="user-key-page" aria-labelledby="user-key-title">
+    <h1 id="user-key-title">Pseudonymer Benutzerschlüssel</h1>
+
+    <p>
+        Dieser pseudonyme Benutzerschlüssel verbindet die aktuelle SSO-Anmeldung mit der
+        verschlüsselten persönlichen Paperless-Zuordnung. Sie enthält weder
+        einen Namen noch ein Paperless-Token.
+    </p>
+
+    @if (_isLoading)
+    {
+        <p role="status">Benutzerschlüssel wird geladen …</p>
+    }
+    else if (string.IsNullOrWhiteSpace(_technicalUserKey))
+    {
+        <div class="alert alert-warning" role="alert">
+            Für die aktuelle Sitzung ist kein pseudonymer Benutzerschlüssel
+            verfügbar. Diese Anzeige wird nur im OIDC-Betrieb nach einer
+            erfolgreichen Anmeldung bereitgestellt.
+        </div>
+    }
+    else
+    {
+        <label for="technical-user-key">Pseudonymer Benutzerschlüssel</label>
+        <textarea id="technical-user-key"
+                  class="form-control user-key-value"
+                  rows="2"
+                  readonly
+                  spellcheck="false">@_technicalUserKey</textarea>
+
+        <p class="user-key-help">
+            Zum Kopieren in das Feld klicken, mit <strong>Cmd + A</strong>
+            markieren und mit <strong>Cmd + C</strong> kopieren.
+            Der Benutzerschlüssel darf ausschließlich in einer besonders geschützten
+            Zuordnungsunterlage dokumentiert werden. Er darf niemals in Protokollen,
+            Screenshots, Terminalausgaben, URLs oder allgemeinen Projektdokumenten erscheinen.
+            Paperless-Tokens dürfen niemals in Browser, URLs, Protokolle oder Quellcode gelangen.
+        </p>
+    }
+
+    <p><a href="/">Zurück zu OrdnerBrowse</a></p>
+</section>
+
+@code {
+    private bool _isLoading = true;
+    private string? _technicalUserKey;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState =
+            await AuthenticationStateProvider.GetAuthenticationStateAsync();
+
+        _technicalUserKey = authenticationState.User.FindFirst(
+            OidcAuthenticationSettings.TechnicalUserKeyClaimType)?.Value;
+
+        _isLoading = false;
+    }
+}

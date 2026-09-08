@@ -1,0 +1,216 @@
+@page "/auth/paperless-connection"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Forms
+@using WebUI.Web.Services
+@inject IPaperlessConnectionTokenStore TokenStore
+@inject NavigationManager Navigation
+@inject ILogger<PaperlessConnection> Logger
+
+<PageTitle>Paperless-Verbindung</PageTitle>
+
+<section class="token-setup" aria-labelledby="token-setup-title">
+    <h1 id="token-setup-title">Persönliche Paperless-Verbindung</h1>
+
+    @if (_preparedToken is null)
+    {
+        <p>
+            Das API-Token wird ausschließlich für diese bewusste Einrichtung
+            oder Änderung verarbeitet. Es wird nicht in Browser-Speichern,
+            URLs, Protokollen oder im Navigationscache abgelegt.
+        </p>
+
+        <EditForm Model="_input" OnValidSubmit="PrepareAsync" FormName="paperless-token-setup">
+            <DataAnnotationsValidator />
+
+            <div class="token-field">
+                <label for="paperless-token">API-Token</label>
+                <InputText id="paperless-token"
+                           class="form-control"
+                           type="password"
+                           autocomplete="new-password"
+                           autocorrect="off"
+                           autocapitalize="off"
+                           spellcheck="false"
+                           @bind-Value="_input.Token" />
+            </div>
+
+            <div class="token-field">
+                <label for="paperless-token-confirmation">API-Token wiederholen</label>
+                <InputText id="paperless-token-confirmation"
+                           class="form-control"
+                           type="password"
+                           autocomplete="new-password"
+                           autocorrect="off"
+                           autocapitalize="off"
+                           spellcheck="false"
+                           @bind-Value="_input.Confirmation" />
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(_message))
+            {
+                <div class="alert alert-warning" role="alert">@_message</div>
+            }
+
+            <div class="token-actions">
+                <button class="btn btn-primary"
+                        type="submit"
+                        disabled="@_isBusy">
+                    @(_isBusy ? "Wird geprüft …" : "Token prüfen")
+                </button>
+                <a class="btn btn-secondary" href="/">Abbrechen</a>
+            </div>
+        </EditForm>
+    }
+    else
+    {
+        <div class="alert alert-success" role="status">
+            Dieser Token ist gültig und wird von Paperless-ngx akzeptiert.
+        </div>
+
+        <p>
+            Die Prüfung hat ausschließlich bestätigt, dass Paperless-ngx
+            dieses Token akzeptiert. Erst mit der folgenden ausdrücklichen
+            Bestätigung wird die persönliche Zuordnung angelegt oder sicher
+            ersetzt.
+        </p>
+
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <div class="alert alert-warning" role="alert">@_message</div>
+        }
+
+        <div class="token-actions">
+            <button class="btn btn-primary"
+                    type="button"
+                    disabled="@_isBusy"
+                    @onclick="SaveAsync">
+                @(_isBusy ? "Wird gespeichert …" : "Verbindlich sicher speichern")
+            </button>
+            <button class="btn btn-secondary"
+                    type="button"
+                    disabled="@_isBusy"
+                    @onclick="CancelPrepared">
+                Zurück
+            </button>
+        </div>
+    }
+</section>
+
+@code {
+    private readonly TokenInputModel _input = new();
+    private PreparedPaperlessToken? _preparedToken;
+    private bool _isBusy;
+    private string? _message;
+
+
+    private async Task PrepareAsync()
+    {
+        _message = null;
+
+        if (string.IsNullOrWhiteSpace(_input.Token) ||
+            string.IsNullOrWhiteSpace(_input.Confirmation))
+        {
+            ClearInput();
+            _message = "Bitte geben Sie das API-Token zweimal vollständig ein.";
+            return;
+        }
+
+        if (!string.Equals(
+                _input.Token,
+                _input.Confirmation,
+                StringComparison.Ordinal))
+        {
+            ClearInput();
+            _message = "Die beiden Eingaben stimmen nicht überein.";
+            return;
+        }
+
+        _isBusy = true;
+
+        try
+        {
+            _preparedToken =
+                await TokenStore.PrepareAsync(_input.Token);
+        }
+        catch (Exception exception)
+        {
+            var error = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: "Das eingegebene Token konnte nicht bestätigt werden.");
+
+            if (!error.IsControlledCancellation)
+            {
+                _message = error.UserMessage;
+                LogFailure("Persönlichen Paperless-Zugang prüfen", error);
+            }
+        }
+        finally
+        {
+            ClearInput();
+            _isBusy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_preparedToken is null)
+        {
+            return;
+        }
+
+        _message = null;
+        _isBusy = true;
+
+        try
+        {
+            await TokenStore.SavePreparedAsync(_preparedToken);
+            _preparedToken = null;
+            Navigation.NavigateTo("/", forceLoad: true);
+        }
+        catch (Exception exception)
+        {
+            var eventId = $"PLS-{Guid.NewGuid():N}"[..16].ToUpperInvariant();
+            _message = "Die Paperless-Verbindung konnte nicht sicher gespeichert werden.";
+
+            Logger.LogError(
+                "Lokale Paperless-Zuordnung konnte nicht gespeichert werden. Ereigniskennung: {EventId}; Ausnahmetyp: {ExceptionType}",
+                eventId,
+                exception.GetType().Name);
+        }
+        finally
+        {
+            _isBusy = false;
+        }
+    }
+
+    private void LogFailure(string action, PaperlessErrorInfo error)
+    {
+        Logger.LogError(
+            "Paperless-Aktion fehlgeschlagen. Ereigniskennung: {EventId}; Aktion: {Action}; Kategorie: {Category}; HTTP-Status: {StatusCode}; Ausnahmetyp: {ExceptionType}; Zeitüberschreitung: {IsTimeout}",
+            error.EventId,
+            action,
+            error.Category,
+            error.StatusCode,
+            error.ExceptionType,
+            error.IsTimeout);
+    }
+
+    private void CancelPrepared()
+    {
+        _preparedToken = null;
+        _message = null;
+        ClearInput();
+    }
+
+    private void ClearInput()
+    {
+        _input.Token = string.Empty;
+        _input.Confirmation = string.Empty;
+    }
+
+    private sealed class TokenInputModel
+    {
+        public string Token { get; set; } = string.Empty;
+        public string Confirmation { get; set; } = string.Empty;
+    }
+}

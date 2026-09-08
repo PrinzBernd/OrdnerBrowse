@@ -1,0 +1,100 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using WebUI.Web.Services
+@inherits LayoutComponentBase
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<div class="app-shell">
+    <header class="app-header">
+        <div class="app-brand" title="@ApplicationDisplayInfo.FullProductName">
+            <strong class="app-brand-name">@ApplicationDisplayInfo.ProductName</strong>
+            <span class="app-brand-tagline">– @ApplicationDisplayInfo.ProductDescription</span>
+        </div>
+
+        <div class="app-session" aria-label="Anmeldestatus">
+            <span class="app-build">@ApplicationDisplayInfo.StatusAndVersion</span>
+
+            @if (_isAuthenticated)
+            {
+                <span class="app-user-line">
+                    <span class="app-user-name" title="@_displayName">Angemeldet: @_displayName</span>
+                    <span class="app-user-separator" aria-hidden="true">·</span>
+                    @if (_isLocalTestUser)
+                    {
+                        <form class="app-logout-form" method="post" action="/local-auth/logout" data-enhance="false">
+                            <AntiforgeryToken />
+                            <button class="app-logout" type="submit">Abmelden</button>
+                        </form>
+                    }
+                    else
+                    {
+                        <a class="app-logout" href="/auth/user-key">Pseudonymer Benutzerschlüssel</a>
+                        <span class="app-user-separator" aria-hidden="true">·</span>
+                        <form class="app-logout-form" method="post" action="/auth/logout" data-enhance="false">
+                            <AntiforgeryToken />
+                            <button class="app-logout" type="submit">Abmelden</button>
+                        </form>
+                    }
+                </span>
+            }
+        </div>
+    </header>
+
+    <main>
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Ein unerwarteter Fehler ist aufgetreten.
+    <a href="." class="reload">Neu laden</a>
+    <span class="dismiss">🗙</span>
+</div>
+
+@code {
+    private bool _isAuthenticated;
+    private bool _isLocalTestUser;
+    private string _displayName = "Angemeldeter Benutzer";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState =
+            await AuthenticationStateProvider.GetAuthenticationStateAsync();
+
+        var user = authenticationState.User;
+        _isAuthenticated = user.Identity?.IsAuthenticated == true;
+
+        if (!_isAuthenticated)
+        {
+            return;
+        }
+
+        _isLocalTestUser = user.HasClaim(
+            claim => claim.Type == LocalTestUserSettings.AliasClaimType);
+
+        _displayName = FirstNonEmptyClaim(
+                user,
+                "preferred_username",
+                "name",
+                "username")
+            ?? user.Identity?.Name
+            ?? "Angemeldeter Benutzer";
+    }
+
+    private static string? FirstNonEmptyClaim(
+        ClaimsPrincipal user,
+        params string[] claimTypes)
+    {
+        foreach (var claimType in claimTypes)
+        {
+            var value = user.FindFirst(claimType)?.Value?.Trim();
+
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+}

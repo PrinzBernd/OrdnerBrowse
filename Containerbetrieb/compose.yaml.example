@@ -1,0 +1,104 @@
+services:
+  webui:
+    image: "${WEBUI_IMAGE:?WEBUI_IMAGE muss gesetzt sein}"
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    init: true
+    user: "${APP_UID:?APP_UID muss gesetzt sein}:${APP_GID:?APP_GID muss gesetzt sein}"
+
+    ports:
+      - "${WEBUI_BIND_ADDRESS:?WEBUI_BIND_ADDRESS muss gesetzt sein}:${WEBUI_PORT:?WEBUI_PORT muss gesetzt sein}:8080"
+
+    environment:
+      TZ: "${TZ:-Europe/Berlin}"
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: "8080"
+
+      Authentication__Oidc__Enabled: "true"
+      Authentication__Oidc__Authority: "${OIDC_AUTHORITY:?OIDC_AUTHORITY muss gesetzt sein}"
+      Authentication__Oidc__MetadataAddress: "${OIDC_METADATA_ADDRESS:?OIDC_METADATA_ADDRESS muss gesetzt sein}"
+      Authentication__Oidc__ClientId: "${OIDC_CLIENT_ID:?OIDC_CLIENT_ID muss gesetzt sein}"
+      Authentication__Oidc__ClientSecretFilePath: /run/secrets/oidc_client_secret
+      Authentication__Oidc__CallbackPath: /signin-oidc
+      Authentication__Oidc__SignedOutCallbackPath: /signout-callback-oidc
+
+      Paperless__BaseUrl: "${PAPERLESS_BASE_URL:?PAPERLESS_BASE_URL muss gesetzt sein}"
+      Paperless__UserTokenDirectory: /data/user-tokens
+
+      WebUi__NavigationCacheDirectory: /data/navigation-cache
+      WebUi__DisplayPrefixesFilePath: /data/config/display-prefixes.json
+      WebUi__DataProtectionKeysDirectory: /data/data-protection-keys
+      WebUi__DataProtectionCertificatePath: /run/secrets/data_protection_certificate
+      WebUi__DataProtectionCertificatePasswordFilePath: /run/secrets/data_protection_certificate_password
+
+      WebUi__ProxyGuard__Enabled: "${PROXY_GUARD_ENABLED:-false}"
+      WebUi__ProxyGuard__SecretFilePath: /run/secrets/proxy_guard_secret
+
+      WebUi__OidcDiagnostics__LogDirectory: /data/oidc-diagnostics
+      WebUi__OidcDiagnostics__RetentionDays: "7"
+      WebUi__PerformanceDiagnostics__LogDirectory: /data/performance-diagnostics
+      WebUi__PerformanceDiagnostics__RetentionDays: "7"
+
+    volumes:
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/secrets
+        target: /run/secrets
+        read_only: true
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/config
+        target: /data/config
+        read_only: true
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/navigation-cache
+        target: /data/navigation-cache
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/diagnostic/oidc
+        target: /data/oidc-diagnostics
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/diagnostic/performance
+        target: /data/performance-diagnostics
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/user-tokens
+        target: /data/user-tokens
+
+      - type: bind
+        source: ${WEBUI_RUNTIME_ROOT:-.}/data-protection-keys
+        target: /data/data-protection-keys
+
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ "$${WebUi__ProxyGuard__Enabled:-false}" = "true" ]; then
+            dotnet WebUI.Web.dll --proxy-guard-healthcheck;
+          else
+            curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null;
+          fi
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+
+    mem_limit: 1g
+    mem_reservation: 256m
+
+    security_opt:
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

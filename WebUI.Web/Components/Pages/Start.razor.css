@@ -1,0 +1,82 @@
+.connection-start {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 2rem 1rem 3rem;
+}
+
+.connection-card {
+    margin-top: 1.25rem;
+    padding: 1.25rem;
+    border: 1px solid #d5d9df;
+    border-radius: 0.75rem;
+    background: #fff;
+}
+
+.connection-card h2 {
+    margin-top: 0;
+    font-size: 1.1rem;
+}
+
+.connection-value {
+    margin-bottom: 0;
+    font-weight: 600;
+}
+
+.connection-ok {
+    font-weight: 700;
+}
+
+.connection-missing {
+    font-weight: 700;
+}
+
+.connection-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+
+.opening-status {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid #d5d9df;
+    border-radius: 0.75rem;
+    background: #f7f8fa;
+}
+
+.opening-status div {
+    display: grid;
+    gap: 0.15rem;
+}
+
+.opening-status span {
+    display: block;
+}
+
+.opening-spinner {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: 0 0 auto;
+    border: 0.18rem solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: opening-spin 0.8s linear infinite;
+}
+
+@keyframes opening-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .opening-spinner {
+        animation: none;
+        border-right-color: currentColor;
+    }
+}
+

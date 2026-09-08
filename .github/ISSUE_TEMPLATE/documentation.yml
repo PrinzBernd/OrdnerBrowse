@@ -1,0 +1,46 @@
+name: Dokumentation / Documentation
+description: Fehler oder Verbesserung in der öffentlichen Dokumentation melden / Report an error or improvement in the public documentation
+title: "[Docs] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bitte keine Secrets, Echtdaten, Originaldokumente oder produktiven Laufzeitdateien einfügen.
+        Please do not include secrets, real data, original documents, or production runtime files.
+
+  - type: input
+    id: document
+    attributes:
+      label: Betroffene Datei oder Seite / Affected file or page
+      description: Welche Dokumentation ist betroffen? / Which documentation is affected?
+      placeholder: z. B. / e.g. README.md or docs/en/CONFIGURATION.md
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Art des Problems / Type of issue
+      options:
+        - Fehler / Error
+        - Unklare Formulierung / Unclear wording
+        - Fehlende Information / Missing information
+        - Übersetzungsabweichung / Translation mismatch
+        - Verbesserungsvorschlag / Improvement suggestion
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Beschreibung / Description
+      description: Was ist falsch, unklar oder unvollständig? / What is incorrect, unclear, or incomplete?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Verbesserungsvorschlag / Improvement suggestion
+      description: Optionaler Vorschlag ohne Echtdaten. / Optional suggestion without real data.

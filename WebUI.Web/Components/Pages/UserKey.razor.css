@@ -1,0 +1,21 @@
+.user-key-page {
+    max-width: 58rem;
+    margin: 0 auto;
+    padding: 2rem 1.25rem 3rem;
+}
+
+.user-key-page h1 {
+    margin-bottom: 1rem;
+}
+
+.user-key-value {
+    margin-top: .5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    overflow-wrap: anywhere;
+    resize: none;
+}
+
+.user-key-help {
+    margin-top: .75rem;
+    color: #4c5667;
+}

@@ -1,0 +1,227 @@
+.app-shell {
+    min-height: 100vh;
+    background: #f5f6f8;
+}
+
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 54px;
+    min-height: 54px;
+    max-height: 54px;
+    gap: 1rem;
+    padding: 0 1rem;
+    overflow: hidden;
+    color: white;
+    background: linear-gradient(90deg, #102d5c, #26306f);
+}
+
+.app-brand {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    align-items: baseline;
+    gap: .35rem;
+    overflow: hidden;
+    font-size: 1.18rem;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.app-brand-name {
+    flex: 0 0 auto;
+}
+
+.app-brand-tagline {
+    min-width: 0;
+    overflow: hidden;
+    color: rgba(255, 255, 255, .86);
+    font-size: .82em;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-session {
+    display: flex;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 62%;
+    height: 100%;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: .16rem;
+    text-align: right;
+}
+
+.app-build,
+.app-user-line {
+    max-width: 100%;
+    color: rgba(255, 255, 255, .78);
+    font-size: .76rem;
+    line-height: 1.05;
+    white-space: nowrap;
+}
+
+.app-user-line {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .34rem;
+}
+
+.app-user-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.app-user-separator {
+    flex: 0 0 auto;
+}
+
+.app-logout-form {
+    display: inline-flex;
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0;
+}
+
+.app-logout {
+    flex: 0 0 auto;
+    margin: 0;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: white;
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.app-logout:hover,
+.app-logout:focus-visible {
+    color: white;
+    text-decoration: underline;
+}
+
+main {
+    min-width: 0;
+}
+
+#blazor-error-ui {
+    color-scheme: light only;
+    background: #ffffe0;
+    bottom: 0;
+    box-shadow: 0 -1px 2px rgba(0, 0, 0, .2);
+    box-sizing: border-box;
+    display: none;
+    left: 0;
+    padding: .6rem 1.25rem .7rem;
+    position: fixed;
+    width: 100%;
+    z-index: 1000;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: .75rem;
+    top: .5rem;
+}
+
+
+/* Der App-Rahmen folgt dynamisch der tatsächlichen Kopfzeilenhöhe. */
+.app-shell {
+    height: 100dvh;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: hidden;
+}
+
+.app-header {
+    min-height: 54px;
+    height: 54px;
+    max-height: 54px;
+}
+
+main {
+    min-height: 0;
+    overflow: hidden;
+}
+
+@media (max-width: 680px) {
+    .app-header {
+        gap: .55rem;
+        padding-right: .7rem;
+        padding-left: .7rem;
+    }
+
+    .app-brand {
+        font-size: 1rem;
+    }
+
+    .app-brand-tagline {
+        display: none;
+    }
+
+    .app-session {
+        max-width: 66%;
+    }
+
+    .app-build,
+    .app-user-line {
+        font-size: .68rem;
+    }
+}
+
+
+/* Bei geringer Fensterhöhe darf die Seite außen scrollen; die App-Shell
+   behält dabei ihr bestehendes Overflow-Verhalten. */
+@media (max-height: 440px) {
+    html,
+    body {
+        min-height: 100%;
+        overflow-y: auto;
+    }
+
+    .app-shell {
+        overflow: visible !important;
+    }
+}
+
+/* Bei geringer Höhe verschwindet zuerst die blaue Kopfzeile.
+   Der Hauptbereich füllt danach die sichtbare Browserhöhe ohne Leerraum. */
+@media (max-height: 440px) {
+    .app-header {
+        display: none !important;
+    }
+
+    .app-shell {
+        height: 100dvh !important;
+        min-height: 232px !important;
+        grid-template-rows: minmax(0, 1fr) !important;
+        overflow-y: auto !important;
+    }
+
+    main {
+        height: 100% !important;
+        min-height: 232px !important;
+        overflow: hidden !important;
+    }
+}
+
+/* Wenn selbst für Kopf, Suchfeld und eine volle Listenzeile kaum Platz
+   bleibt, entfällt zusätzlich die Fußzeile. */
+@media (max-height: 300px) {
+    .app-shell,
+    main {
+        min-height: 198px !important;
+    }
+}

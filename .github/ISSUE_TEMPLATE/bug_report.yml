@@ -1,0 +1,61 @@
+name: Fehler melden / Report a bug
+description: Reproduzierbares Problem in OrdnerBrowse melden / Report a reproducible problem in OrdnerBrowse
+title: "[Bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Bitte verwende nur neutralisierte Beispielwerte. Keine Kennwörter, API-Tokens, 2FA-Codes, Secret-Inhalte, privaten Schlüssel, Originaldokumente oder produktiven Laufzeitdateien veröffentlichen.
+        Please use neutralised example values only. Do not publish passwords, API tokens, 2FA codes, secret contents, private keys, original documents, or production runtime files.
+
+  - type: input
+    id: version
+    attributes:
+      label: OrdnerBrowse-Version / OrdnerBrowse version
+      description: Welche OrdnerBrowse-Version ist betroffen? / Which OrdnerBrowse version is affected?
+      placeholder: z. B. / e.g. vX.Y.Z-rc.N
+    validations:
+      required: true
+
+  - type: input
+    id: area
+    attributes:
+      label: Betroffene Funktion / Affected area
+      description: Welche Ansicht oder Funktion ist betroffen? / Which view or function is affected?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten / Expected behaviour
+      description: Was sollte passieren? / What should happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Tatsächliches Verhalten / Actual behaviour
+      description: Was passiert stattdessen? / What happens instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduktionsschritte / Steps to reproduce
+      description: Bitte nur mit neutralisierten Beispielwerten. / Please use neutralised example values only.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Abgrenzung / Scope
+      options:
+        - label: Ich habe geprüft, ob das Problem möglicherweise in paperless-ngx, dem OIDC-Provider, dem Reverse Proxy oder einer anderen Fremdkomponente liegt. / I have checked whether the problem may originate in paperless-ngx, the OIDC provider, the reverse proxy, or another third-party component.
+          required: true
+        - label: Der Bericht enthält keine Secrets, Echtdokumente oder produktiven Laufzeitdateien. / The report contains no secrets, real documents, or production runtime files.
+          required: true

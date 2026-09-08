@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" Version="10.0.10" />
+    <ProjectReference Include="..\WebUI.Infrastructure\WebUI.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <AssemblyName>WebUI.Web</AssemblyName>
+    <RootNamespace>WebUI.Web</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+</Project>

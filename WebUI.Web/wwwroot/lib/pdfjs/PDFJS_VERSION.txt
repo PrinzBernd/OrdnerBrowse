@@ -1,0 +1,8 @@
+PDF.js-Paket: pdfjs-dist
+PDF.js-Version: 6.2.108
+Quelle: offizielle npm-Registry (versionsspezifische Metadaten)
+Metadaten-Endpunkt: https://registry.npmjs.org/pdfjs-dist/6.2.108
+Tarball: https://registry.npmjs.org/pdfjs-dist/-/pdfjs-dist-6.2.108.tgz
+npm-dist-integrity: sha512-YxFb+SQcodN2rnX9Tn3dHYlqfb7NjlzzfONPpJd+AKoKtUjEdevTfbC07d5TcczzOK6261auRkP/M8OBHs9vFQ==
+Tarball-SHA-256: b3e68d5cda70551a90b3f771419d379e20fc788ce056fa32de73608e01df47f4
+Lizenz: Apache-2.0

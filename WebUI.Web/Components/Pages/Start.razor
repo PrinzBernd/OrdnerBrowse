@@ -1,0 +1,212 @@
+@page "/"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
+@using WebUI.Web.Services
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject OidcAuthenticationSettings OidcSettings
+@inject IPaperlessConnectionTokenStore TokenStore
+@inject NavigationManager Navigation
+
+<PageTitle>Start und Paperless-Verbindung</PageTitle>
+
+<section class="connection-start" aria-labelledby="connection-start-title">
+    <h1 id="connection-start-title">Start und Paperless-Verbindung</h1>
+
+    @if (_isLoading)
+    {
+        <p role="status">Verbindungsstatus wird geprüft …</p>
+    }
+    else if (!_isAuthenticated)
+    {
+        <div class="alert alert-warning" role="alert">
+            Für OrdnerBrowse ist eine sichere Anmeldung erforderlich.
+        </div>
+
+        <button class="btn btn-primary"
+                type="button"
+                disabled="@_isLoginStarting"
+                @onclick="StartLoginAsync">
+            @(_isLoginStarting ? "Anmeldung wird gestartet …" : "Sicher anmelden")
+        </button>
+
+        @if (_isLoginStarting)
+        {
+            <p role="status" aria-live="polite">Sichere Anmeldung wird gestartet …</p>
+        }
+    }
+    else
+    {
+        @if (OidcSettings.Enabled)
+        {
+            <div class="connection-card">
+                <h2>Angemeldetes SSO-Konto</h2>
+                <p class="connection-value">@_displayName</p>
+            </div>
+        }
+        else
+        {
+            <div class="connection-card">
+                <h2>Lokaler Entwicklungsbetrieb</h2>
+                <p class="connection-value">@_displayName</p>
+            </div>
+        }
+
+        <div class="connection-card">
+            <h2>Persönliche Paperless-Verbindung</h2>
+
+            @if (_statusError)
+            {
+                <div class="alert alert-warning" role="alert">
+                    Der Verbindungsstatus konnte nicht bestimmt werden.
+                </div>
+                <a class="btn btn-secondary" href="/auth/paperless-connection">
+                    Paperless-Verbindung verwalten
+                </a>
+            }
+            else if (_isConfigured)
+            {
+                <p class="connection-ok">Eingerichtet</p>
+                <p>
+                    @if (OidcSettings.Enabled)
+                    {
+                        <text>Das persönliche API-Token ist verschlüsselt serverseitig hinterlegt und wird nicht angezeigt.</text>
+                    }
+                    else
+                    {
+                        <text>Das persönliche API-Token ist sicher im macOS-Schlüsselbund hinterlegt und wird nicht angezeigt.</text>
+                    }
+                </p>
+
+                <div class="connection-actions">
+                    <button class="btn btn-primary"
+                            type="button"
+                            disabled="@_isOpening"
+                            @onclick="OpenWebUiAsync">
+                        @(_isOpening ? "OrdnerBrowse wird geöffnet …" : "OrdnerBrowse öffnen")
+                    </button>
+                    <a class="btn btn-secondary" href="/auth/paperless-connection">
+                        API-Token ändern
+                    </a>
+                </div>
+
+                @if (_isOpening)
+                {
+                    <div class="opening-status" role="status" aria-live="polite">
+                        <span class="opening-spinner" aria-hidden="true"></span>
+                        <div>
+                            <strong>@_openingTitle</strong>
+                            <span>@_openingDetail</span>
+                        </div>
+                    </div>
+                }
+            }
+            else
+            {
+                <p class="connection-missing">Noch nicht eingerichtet</p>
+                <p>
+                    Vor der ersten Nutzung muss das persönliche Paperless-API-Token
+                    sicher hinterlegt werden.
+                </p>
+
+                <a class="btn btn-primary" href="/auth/paperless-connection">
+                    API-Token einrichten
+                </a>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    private bool _isLoading = true;
+    private bool _isAuthenticated;
+    private bool _isConfigured;
+    private bool _statusError;
+    private bool _isLoginStarting;
+    private bool _isOpening;
+    private string _openingTitle = "OrdnerBrowse wird geöffnet …";
+    private string _openingDetail = "Bitte warten Sie einen Moment.";
+    private string _displayName = "Angemeldeter Benutzer";
+
+    private async Task StartLoginAsync()
+    {
+        if (_isLoginStarting)
+        {
+            return;
+        }
+
+        _isLoginStarting = true;
+        await InvokeAsync(StateHasChanged);
+        await Task.Yield();
+
+        Navigation.NavigateTo(
+            "/auth/login",
+            forceLoad: true);
+    }
+
+    private async Task OpenWebUiAsync()
+    {
+        if (_isOpening)
+        {
+            return;
+        }
+
+        _isOpening = true;
+        _openingTitle = "OrdnerBrowse wird geöffnet …";
+        _openingDetail = "Bitte warten Sie einen Moment.";
+
+        StateHasChanged();
+        _ = ShowExtendedOpeningStatusAsync();
+
+        await Task.Delay(50);
+        Navigation.NavigateTo("/documents");
+    }
+
+    private async Task ShowExtendedOpeningStatusAsync()
+    {
+        await Task.Delay(1000);
+
+        if (!_isOpening)
+        {
+            return;
+        }
+
+        _openingTitle = "Dokumentenbestand wird geprüft …";
+        _openingDetail =
+            "Bei einem großen Archiv kann dies einige Sekunden dauern.";
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState =
+            await AuthenticationStateProvider.GetAuthenticationStateAsync();
+
+        var user = authenticationState.User;
+        _isAuthenticated =
+            user.Identity?.IsAuthenticated == true;
+
+        _displayName =
+            user.Identity?.Name ??
+            user.FindFirst("username")?.Value ??
+            "Angemeldeter Benutzer";
+
+        if (_isAuthenticated)
+        {
+            try
+            {
+                var status =
+                    await TokenStore.GetStatusAsync();
+
+                _isConfigured =
+                    status.IsConfigured;
+            }
+            catch
+            {
+                _statusError = true;
+            }
+        }
+
+        _isLoading = false;
+    }
+}
