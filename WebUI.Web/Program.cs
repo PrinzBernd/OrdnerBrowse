@@ -289,6 +289,9 @@ if (oidcSettings.Enabled)
                     GetDiagnosticProperty(
                         properties,
                         OidcDiagnosticInitialPkceProperty);
+                var challengeId =
+                    GetOidcChallengeId(
+                        properties);
                 string? stateVerifier = null;
                 var hasVerifier =
                     properties is not null &&
@@ -310,6 +313,35 @@ if (oidcSettings.Enabled)
                     context.HttpContext.RequestServices
                         .GetRequiredService<ILoggerFactory>()
                         .CreateLogger(OidcDiagnosticsFileLoggerProvider.LoggerCategory);
+                var challengeGuard =
+                    context.HttpContext.RequestServices
+                        .GetRequiredService<OidcChallengeGuard>();
+                var callbackGuardResult =
+                    challengeId is not null &&
+                    challengeGuard.TryGetBrowserContextKey(
+                        context.HttpContext.Request,
+                        out var browserContextKey)
+                        ? challengeGuard.TryBeginCallback(
+                            browserContextKey,
+                            challengeId,
+                            DateTimeOffset.UtcNow)
+                        : OidcChallengeCallbackResult.StaleOrMissing;
+
+                if (callbackGuardResult !=
+                    OidcChallengeCallbackResult.Started)
+                {
+                    logger.LogWarning(
+                        "OIDC-DIAG CallbackRejected; Grund: {CallbackGuardResult}",
+                        callbackGuardResult);
+
+                    context.HandleResponse();
+                    context.Response.Redirect(
+                        "/auth/login");
+                    return Task.CompletedTask;
+                }
+
+                logger.LogInformation(
+                    "OIDC-DIAG ChallengeGuardCallbackStarted");
 
                 logger.LogInformation(
                     "OIDC-DIAG Callback; Transaktion: {TransactionId}; Ursprung: {Origin}; State wiederhergestellt: {StateRestored}; Verifier im State vorhanden: {HasVerifier}; Autorisierungscode vorhanden: {HasAuthorizationCode}; Initiale PKCE-Konsistenz: {InitialPkceConsistent}",
@@ -425,16 +457,34 @@ if (oidcSettings.Enabled)
                 var challengeGuard =
                     context.HttpContext.RequestServices
                         .GetRequiredService<OidcChallengeGuard>();
-
-                if (challengeGuard.Release(
-                        context.HttpContext.Request))
-                {
+                var diagnosticLogger =
                     context.HttpContext.RequestServices
                         .GetRequiredService<ILoggerFactory>()
                         .CreateLogger(
-                            OidcDiagnosticsFileLoggerProvider.LoggerCategory)
-                        .LogInformation(
-                            "OIDC-DIAG ChallengeGuardReleased; Grund: TokenValidated");
+                            OidcDiagnosticsFileLoggerProvider.LoggerCategory);
+                var challengeId =
+                    GetOidcChallengeId(
+                        context.Properties);
+
+                if (challengeId is null ||
+                    !challengeGuard.IsCurrent(
+                        context.HttpContext.Request,
+                        challengeId))
+                {
+                    diagnosticLogger.LogWarning(
+                        "OIDC-DIAG CallbackSupersededBeforeTicket");
+                    context.HandleResponse();
+                    context.Response.Redirect(
+                        "/auth/login");
+                    return Task.CompletedTask;
+                }
+
+                if (challengeGuard.Release(
+                        context.HttpContext.Request,
+                        challengeId))
+                {
+                    diagnosticLogger.LogInformation(
+                        "OIDC-DIAG ChallengeGuardReleased; Grund: TokenValidated");
                 }
 
                 if (context.Principal?.Identity is not ClaimsIdentity identity)
@@ -482,8 +532,13 @@ if (oidcSettings.Enabled)
                     context.HttpContext.RequestServices
                         .GetRequiredService<ILoggerFactory>()
                         .CreateLogger(OidcDiagnosticsFileLoggerProvider.LoggerCategory);
-                if (challengeGuard.Release(
-                        context.HttpContext.Request))
+                var challengeId =
+                    GetOidcChallengeId(
+                        context.Properties);
+                if (challengeId is not null &&
+                    challengeGuard.Release(
+                        context.HttpContext.Request,
+                        challengeId))
                 {
                     diagnosticLogger.LogInformation(
                         "OIDC-DIAG ChallengeGuardReleased; Grund: RemoteFailure");
@@ -863,11 +918,14 @@ if (oidcSettings.Enabled)
 {
     app.MapGet(
         "/auth/login",
-        () => Results.Challenge(
-            new AuthenticationProperties
-            {
-                RedirectUri = "/"
-            }))
+        (ClaimsPrincipal user) =>
+            user.Identity?.IsAuthenticated == true
+                ? (IResult)Results.Redirect("/")
+                : Results.Challenge(
+                    new AuthenticationProperties
+                    {
+                        RedirectUri = "/"
+                    }))
         .AllowAnonymous();
 
     app.MapGet(
@@ -890,7 +948,8 @@ if (oidcSettings.Enabled)
         async (
             HttpContext httpContext,
             IAntiforgery antiforgery,
-            UserSessionRegistry userSessions) =>
+            UserSessionRegistry userSessions,
+            OidcChallengeGuard challengeGuard) =>
         {
             if (!await antiforgery.IsRequestValidAsync(httpContext))
             {
@@ -900,6 +959,10 @@ if (oidcSettings.Enabled)
             userSessions.Revoke(
                 httpContext.User.FindFirstValue(
                     OidcAuthenticationSettings.SessionIdClaimType));
+
+            challengeGuard.RotateBrowserContextCookie(
+                httpContext.Request,
+                httpContext.Response);
 
             return Results.SignOut(
                 new AuthenticationProperties
@@ -1136,6 +1199,23 @@ static string ToDiagnosticDigestComparison(
         rightDigest)
         ? "JA"
         : "NEIN";
+}
+
+static string? GetOidcChallengeId(
+    AuthenticationProperties? properties)
+{
+    if (properties?.Items.TryGetValue(
+            OidcChallengeGuard.ChallengeIdProperty,
+            out var challengeId) == true &&
+        Guid.TryParseExact(
+            challengeId,
+            "N",
+            out _))
+    {
+        return challengeId;
+    }
+
+    return null;
 }
 
 static string GetDiagnosticProperty(

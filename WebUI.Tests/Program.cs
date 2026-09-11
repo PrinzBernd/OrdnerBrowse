@@ -131,6 +131,13 @@ var tests = new (string Name, Func<Task> Execute)[]
     ("AP03 OIDC-Guard-Freigabe ist an TokenValidated und RemoteFailure angebunden", TestAp03OidcReleaseHooksAsync),
     ("AP03 OIDC-Guard-Schlüssel wird nicht diagnostisch protokolliert", TestAp03OidcGuardKeyNotLoggedAsync),
     ("AP03 OIDC-Browserkontextcookie mit __Host-Präfix ist immer Secure", TestAp03OidcBrowserContextCookieIsAlwaysSecureAsync),
+    ("AP03 OIDC-Lease kann nur durch ihre eigene Challenge freigegeben werden", TestAp03OidcReleaseOwnershipAsync),
+    ("AP03 OIDC-Callback akzeptiert nur die aktuelle Challenge genau einmal", TestAp03OidcCallbackAdmissionAsync),
+    ("AP03 OIDC-Callback verlängert den Parallelstartschutz kontrolliert", TestAp03OidcCallbackLeaseProtectionAsync),
+    ("AP03 OIDC-Logout rotiert ausschließlich den aktuellen Browserkontext", TestAp03OidcLogoutRotatesBrowserContextAsync),
+    ("AP03 blockierte OIDC-Anmeldung besitzt automatischen Recovery-Pfad", TestAp03OidcBlockedPageRecoveryAsync),
+    ("AP03 OIDC-Callbacks sind an Challenge-Eigentümerschaft gebunden", TestAp03OidcCallbackOwnershipHooksAsync),
+    ("AP03 bereits authentifizierter Login startet keine neue OIDC-Challenge", TestAp03OidcAuthenticatedLoginDoesNotChallengeAsync),
     ("AP06 Docker Desktop Proxy-Hop wird über gateway.docker.internal ermittelt", TestAp06DockerDesktopProxyResolutionSourceAsync),
     ("AP06 erster OIDC-Login verwendet denselben vorbereiteten Browserkontext ohne 409-Zwischenseite", TestAp06OidcFirstLoginContinuesWithoutContextPageAsync),
     ("AP03 Start-Wrapper ist POSIX-sh-basiert und vorhanden", TestAp03StartWrapperPresentAsync),
@@ -167,7 +174,8 @@ var tests = new (string Name, Func<Task> Execute)[]
     ("PDF.js-Renderer berücksichtigt HiDPI-Ausgabe", TestQuickLookPdfHiDpiAsync),
     ("PDF.js-Renderer erhält die relative Scrollposition", TestQuickLookPdfScrollPositionAsync),
     ("Lokale PDF.js-Dateien und Lizenznachweis sind vorhanden", TestLocalPdfJsAssetsAsync),
-    ("Versionsschema lautet v09.91.1 und .NET 0.9.91", TestApplicationDisplayVersionAsync),
+    ("Versionsschema lautet v09.91.2 und .NET 0.9.91", TestApplicationDisplayVersionAsync),
+    ("Zentraler Navigationsabgleich bleibt von transientem Circuit-Disconnect entkoppelt", TestCentralNavigationSessionAvailabilityAsync),
     ("Display-Präfixe sind für vier Explorer-Bereiche getrennt konfigurierbar", TestDisplayPrefixesFourAreasAsync),
     ("Display-Präfixe entfernen exakt nur den längsten passenden Anfang", TestDisplayPrefixesLongestExactPrefixAsync),
     ("Display-Präfix-Muster unterstützen definierte Datums- und Zeichenregeln", TestDisplayPrefixPatternsAsync),
@@ -3860,7 +3868,10 @@ static Task TestAp02LoginEndpointBlocksParallelChallengeAsync()
             "options.DefaultChallengeScheme =\n                OidcChallengeAuthenticationHandler.SchemeName;",
             StringComparison.Ordinal) &&
         programSource.Contains(
-            "app.MapGet(\n        \"/auth/login\",\n        () => Results.Challenge(",
+            "app.MapGet(\n        \"/auth/login\"",
+            StringComparison.Ordinal) &&
+        programSource.Contains(
+            "Results.Challenge(",
             StringComparison.Ordinal) &&
         handlerSource.Contains(
             "guard.TryAcquire(",
@@ -4248,6 +4259,7 @@ static async Task TestAp03OidcAtomicAcquireAsync()
                         () =>
                             guard.TryAcquire(
                                 browserKey,
+                                Guid.NewGuid().ToString("N"),
                                 now)))
             .ToArray();
 
@@ -4277,9 +4289,11 @@ static Task TestAp03OidcDifferentBrowserContextsAsync()
     Assert(
         guard.TryAcquire(
             Guid.NewGuid().ToString("N"),
+            Guid.NewGuid().ToString("N"),
             now) ==
             OidcChallengeAcquireResult.Acquired &&
         guard.TryAcquire(
+            Guid.NewGuid().ToString("N"),
             Guid.NewGuid().ToString("N"),
             now) ==
             OidcChallengeAcquireResult.Acquired,
@@ -4297,15 +4311,23 @@ static Task TestAp03OidcReleaseAsync()
     var browserKey =
         Guid.NewGuid().ToString("N");
 
+    var firstChallengeId =
+        Guid.NewGuid().ToString("N");
+    var secondChallengeId =
+        Guid.NewGuid().ToString("N");
+
     Assert(
         guard.TryAcquire(
             browserKey,
+            firstChallengeId,
             now) ==
             OidcChallengeAcquireResult.Acquired &&
         guard.Release(
-            browserKey) &&
+            browserKey,
+            firstChallengeId) &&
         guard.TryAcquire(
             browserKey,
+            secondChallengeId,
             now) ==
             OidcChallengeAcquireResult.Acquired,
         "Release gibt denselben Browserkontext nicht unmittelbar wieder frei.");
@@ -4325,10 +4347,12 @@ static Task TestAp03OidcExpiryAsync()
     Assert(
         guard.TryAcquire(
             browserKey,
+            Guid.NewGuid().ToString("N"),
             now) ==
             OidcChallengeAcquireResult.Acquired &&
         guard.TryAcquire(
             browserKey,
+            Guid.NewGuid().ToString("N"),
             now.Add(
                 OidcChallengeGuard.LeaseLifetime)
                 .AddMilliseconds(1)) ==
@@ -4390,13 +4414,22 @@ static Task TestAp03OidcGuardKeyNotLoggedAsync()
         guardSource.Contains(
             "BrowserContextCookieName",
             StringComparison.Ordinal) &&
+        guardSource.Contains(
+            "ChallengeIdProperty",
+            StringComparison.Ordinal) &&
         !handlerSource.Contains(
             "{BrowserContextKey}",
             StringComparison.Ordinal) &&
         !programSource.Contains(
             "{BrowserContextKey}",
+            StringComparison.Ordinal) &&
+        !handlerSource.Contains(
+            "{ChallengeId}",
+            StringComparison.Ordinal) &&
+        !programSource.Contains(
+            "{ChallengeId}",
             StringComparison.Ordinal),
-        "Der pseudonyme OIDC-Guard-Schlüssel wird diagnostisch ausgegeben.");
+        "Ein pseudonymer OIDC-Guard- oder Challenge-Schlüssel wird diagnostisch ausgegeben.");
 
     var searchIndex = 0;
     while (true)
@@ -4542,6 +4575,364 @@ static Task TestAp03OidcBrowserContextCookieIsAlwaysSecureAsync()
             "; secure",
             StringComparison.OrdinalIgnoreCase),
         "Der OIDC-Browserkontextcookie mit __Host-Präfix wird nicht unabhängig vom erkannten Request-Schema als Secure gesetzt.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcReleaseOwnershipAsync()
+{
+    var guard =
+        new OidcChallengeGuard();
+    var now =
+        DateTimeOffset.UtcNow;
+    var browserKey =
+        Guid.NewGuid().ToString("N");
+    var firstChallengeId =
+        Guid.NewGuid().ToString("N");
+    var secondChallengeId =
+        Guid.NewGuid().ToString("N");
+
+    Assert(
+        guard.TryAcquire(
+            browserKey,
+            firstChallengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        guard.TryAcquire(
+            browserKey,
+            secondChallengeId,
+            now.Add(
+                OidcChallengeGuard.LeaseLifetime)
+                .AddMilliseconds(1)) ==
+            OidcChallengeAcquireResult.ExpiredReplaced &&
+        !guard.Release(
+            browserKey,
+            firstChallengeId) &&
+        guard.IsCurrent(
+            browserKey,
+            secondChallengeId) &&
+        guard.Release(
+            browserKey,
+            secondChallengeId),
+        "Eine veraltete OIDC-Challenge kann die Lease einer neueren Challenge freigeben.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcCallbackAdmissionAsync()
+{
+    var guard =
+        new OidcChallengeGuard();
+    var now =
+        DateTimeOffset.UtcNow;
+    var browserKey =
+        Guid.NewGuid().ToString("N");
+    var challengeId =
+        Guid.NewGuid().ToString("N");
+
+    Assert(
+        guard.TryAcquire(
+            browserKey,
+            challengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        guard.TryBeginCallback(
+            browserKey,
+            challengeId,
+            now.AddSeconds(1)) ==
+            OidcChallengeCallbackResult.Started &&
+        guard.TryBeginCallback(
+            browserKey,
+            challengeId,
+            now.AddSeconds(2)) ==
+            OidcChallengeCallbackResult.Duplicate,
+        "Dieselbe OIDC-Challenge kann ihren Callback mehr als einmal beginnen.");
+
+    var replacementGuard =
+        new OidcChallengeGuard();
+    var oldChallengeId =
+        Guid.NewGuid().ToString("N");
+    var newChallengeId =
+        Guid.NewGuid().ToString("N");
+
+    Assert(
+        replacementGuard.TryAcquire(
+            browserKey,
+            oldChallengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        replacementGuard.TryAcquire(
+            browserKey,
+            newChallengeId,
+            now.Add(
+                OidcChallengeGuard.LeaseLifetime)
+                .AddMilliseconds(1)) ==
+            OidcChallengeAcquireResult.ExpiredReplaced &&
+        replacementGuard.TryBeginCallback(
+            browserKey,
+            oldChallengeId,
+            now.Add(
+                OidcChallengeGuard.LeaseLifetime)
+                .AddSeconds(1)) ==
+            OidcChallengeCallbackResult.StaleOrMissing &&
+        replacementGuard.TryBeginCallback(
+            browserKey,
+            newChallengeId,
+            now.Add(
+                OidcChallengeGuard.LeaseLifetime)
+                .AddSeconds(1)) ==
+            OidcChallengeCallbackResult.Started,
+        "Ein veralteter OIDC-Callback wird nicht eindeutig von der aktuellen Challenge getrennt.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcCallbackLeaseProtectionAsync()
+{
+    var guard =
+        new OidcChallengeGuard();
+    var now =
+        DateTimeOffset.UtcNow;
+    var browserKey =
+        Guid.NewGuid().ToString("N");
+    var firstChallengeId =
+        Guid.NewGuid().ToString("N");
+    var blockedChallengeId =
+        Guid.NewGuid().ToString("N");
+    var replacementChallengeId =
+        Guid.NewGuid().ToString("N");
+    var callbackStartedAt =
+        now.AddSeconds(1);
+
+    Assert(
+        OidcChallengeGuard.LeaseLifetime ==
+            TimeSpan.FromSeconds(15) &&
+        OidcChallengeGuard.CallbackLeaseLifetime ==
+            TimeSpan.FromSeconds(60) &&
+        guard.TryAcquire(
+            browserKey,
+            firstChallengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        guard.TryBeginCallback(
+            browserKey,
+            firstChallengeId,
+            callbackStartedAt) ==
+            OidcChallengeCallbackResult.Started &&
+        guard.TryAcquire(
+            browserKey,
+            blockedChallengeId,
+            callbackStartedAt
+                .Add(OidcChallengeGuard.LeaseLifetime)
+                .AddMilliseconds(1)) ==
+            OidcChallengeAcquireResult.Blocked &&
+        guard.TryAcquire(
+            browserKey,
+            replacementChallengeId,
+            callbackStartedAt
+                .Add(OidcChallengeGuard.CallbackLeaseLifetime)
+                .AddMilliseconds(1)) ==
+            OidcChallengeAcquireResult.ExpiredReplaced,
+        "Das kurze Startfenster oder der längere Schutz eines laufenden OIDC-Callbacks ist nicht eindeutig umgesetzt.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcLogoutRotatesBrowserContextAsync()
+{
+    var guard =
+        new OidcChallengeGuard();
+    var now =
+        DateTimeOffset.UtcNow;
+    var currentBrowserKey =
+        Guid.NewGuid().ToString("N");
+    var otherBrowserKey =
+        Guid.NewGuid().ToString("N");
+    var currentChallengeId =
+        Guid.NewGuid().ToString("N");
+    var otherChallengeId =
+        Guid.NewGuid().ToString("N");
+    var context =
+        new DefaultHttpContext();
+
+    context.Request.Headers.Cookie =
+        $"{OidcChallengeGuard.BrowserContextCookieName}={currentBrowserKey}";
+
+    Assert(
+        guard.TryAcquire(
+            currentBrowserKey,
+            currentChallengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        guard.TryAcquire(
+            otherBrowserKey,
+            otherChallengeId,
+            now) ==
+            OidcChallengeAcquireResult.Acquired,
+        "Die Ausgangslage für den OIDC-Logout-Rotationstest konnte nicht hergestellt werden.");
+
+    var newBrowserKey =
+        guard.RotateBrowserContextCookie(
+            context.Request,
+            context.Response);
+
+    Assert(
+        newBrowserKey != currentBrowserKey &&
+        guard.TryAcquire(
+            currentBrowserKey,
+            Guid.NewGuid().ToString("N"),
+            now) ==
+            OidcChallengeAcquireResult.Acquired &&
+        guard.TryAcquire(
+            otherBrowserKey,
+            Guid.NewGuid().ToString("N"),
+            now) ==
+            OidcChallengeAcquireResult.Blocked,
+        "Der Logout rotiert nicht ausschließlich den aktuellen OIDC-Browserkontext.");
+
+    var programSource =
+        ReadProjectSource(
+            "WebUI.Web/Program.cs");
+    var logoutBlock =
+        ExtractSourceBlock(
+            programSource,
+            "app.MapPost(\n        \"/auth/logout\"",
+            "app.MapGet(\n        \"/auth/signed-out\"");
+    var htmlSource =
+        ReadProjectSource(
+            "WebUI.Web/Services/AuthenticationHtmlPages.cs");
+
+    Assert(
+        logoutBlock.Contains(
+            "OidcChallengeGuard challengeGuard",
+            StringComparison.Ordinal) &&
+        logoutBlock.Contains(
+            "challengeGuard.RotateBrowserContextCookie(",
+            StringComparison.Ordinal) &&
+        htmlSource.Contains(
+            "Eine erneute Anmeldung ist direkt möglich.",
+            StringComparison.Ordinal) &&
+        !htmlSource.Contains(
+            "schließen Sie den Browser vollständig",
+            StringComparison.Ordinal),
+        "Der OIDC-Logout rotiert den Guard-Kontext nicht oder verlangt weiterhin einen Browserneustart.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcBlockedPageRecoveryAsync()
+{
+    var handlerSource =
+        ReadProjectSource(
+            "WebUI.Web/Services/OidcChallengeAuthenticationHandler.cs");
+
+    Assert(
+        handlerSource.Contains(
+            "BlockedRetryDelaySeconds = 3;",
+            StringComparison.Ordinal) &&
+        handlerSource.Contains(
+            "http-equiv=\"refresh\"",
+            StringComparison.Ordinal) &&
+        handlerSource.Contains(
+            "url=/auth/login",
+            StringComparison.Ordinal) &&
+        handlerSource.Contains(
+            "Response.Headers[\"Retry-After\"]",
+            StringComparison.Ordinal) &&
+        handlerSource.Contains(
+            "no-store, no-cache, max-age=0",
+            StringComparison.Ordinal),
+        "Die blockierte OIDC-Anmeldeseite besitzt keinen zeitnahen, nicht cachebaren Recovery-Pfad.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcCallbackOwnershipHooksAsync()
+{
+    var handlerSource =
+        ReadProjectSource(
+            "WebUI.Web/Services/OidcChallengeAuthenticationHandler.cs");
+    var programSource =
+        ReadProjectSource(
+            "WebUI.Web/Program.cs");
+    var messageReceivedBlock =
+        ExtractSourceBlock(
+            programSource,
+            "options.Events.OnMessageReceived = context =>",
+            "options.Events.OnAuthorizationCodeReceived = context =>");
+    var tokenValidatedBlock =
+        ExtractSourceBlock(
+            programSource,
+            "options.Events.OnTokenValidated = context =>",
+            "options.Events.OnRemoteFailure = async context =>");
+
+    Assert(
+        handlerSource.Contains(
+            "OidcChallengeGuard.ChallengeIdProperty",
+            StringComparison.Ordinal) &&
+        handlerSource.IndexOf(
+            "OidcChallengeGuard.ChallengeIdProperty",
+            StringComparison.Ordinal) <
+        handlerSource.IndexOf(
+            "Context.ChallengeAsync(",
+            StringComparison.Ordinal) &&
+        messageReceivedBlock.Contains(
+            "challengeGuard.TryBeginCallback(",
+            StringComparison.Ordinal) &&
+        messageReceivedBlock.Contains(
+            "OidcChallengeCallbackResult.StaleOrMissing",
+            StringComparison.Ordinal) &&
+        messageReceivedBlock.Contains(
+            "OIDC-DIAG CallbackRejected",
+            StringComparison.Ordinal) &&
+        tokenValidatedBlock.Contains(
+            "challengeGuard.IsCurrent(",
+            StringComparison.Ordinal) &&
+        tokenValidatedBlock.Contains(
+            "OIDC-DIAG CallbackSupersededBeforeTicket",
+            StringComparison.Ordinal) &&
+        tokenValidatedBlock.IndexOf(
+            "challengeGuard.IsCurrent(",
+            StringComparison.Ordinal) <
+        tokenValidatedBlock.IndexOf(
+            "challengeGuard.Release(",
+            StringComparison.Ordinal),
+        "Challenge-ID, Callback-Eigentümerschaft oder Schutz vor einem veralteten lokalen Ticket ist nicht durchgängig verdrahtet.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestAp03OidcAuthenticatedLoginDoesNotChallengeAsync()
+{
+    var programSource =
+        ReadProjectSource(
+            "WebUI.Web/Program.cs");
+    var loginBlock =
+        ExtractSourceBlock(
+            programSource,
+            "app.MapGet(\n        \"/auth/login\"",
+            "app.MapGet(\n        \"/auth/status\"");
+
+    Assert(
+        loginBlock.Contains(
+            "ClaimsPrincipal user",
+            StringComparison.Ordinal) &&
+        loginBlock.Contains(
+            "user.Identity?.IsAuthenticated == true",
+            StringComparison.Ordinal) &&
+        loginBlock.Contains(
+            "Results.Redirect(\"/\")",
+            StringComparison.Ordinal) &&
+        loginBlock.Contains(
+            "Results.Challenge(",
+            StringComparison.Ordinal) &&
+        loginBlock.IndexOf(
+            "IsAuthenticated == true",
+            StringComparison.Ordinal) <
+        loginBlock.IndexOf(
+            "Results.Challenge(",
+            StringComparison.Ordinal),
+        "Ein bereits authentifizierter Aufruf von /auth/login kann weiterhin eine zusätzliche OIDC-Challenge starten.");
 
     return Task.CompletedTask;
 }
@@ -5344,20 +5735,34 @@ static Task TestApplicationDisplayVersionAsync()
     var buildProps = ReadProjectSource("Directory.Build.props");
 
     Assert(
-        ApplicationDisplayInfo.FullVersion == "v09.91.1" &&
-        source.Contains("public const string Version = \"09.91.1\";", StringComparison.Ordinal) &&
+        ApplicationDisplayInfo.FullVersion == "v09.91.2" &&
+        source.Contains("public const string Version = \"09.91.2\";", StringComparison.Ordinal) &&
         source.Contains("public const string PreRelease = \"\";", StringComparison.Ordinal) &&
         source.Contains("PreRelease.Length == 0", StringComparison.Ordinal) &&
         !source.Contains("public const string Revision =", StringComparison.Ordinal),
-        "Die sichtbare Anwendungsversion entspricht nicht dem Schema v09.91.1 / optional -rc.N.");
+        "Die sichtbare Anwendungsversion entspricht nicht dem Schema v09.91.2 / optional -rc.N.");
 
     Assert(
         buildProps.Contains("<Version>0.9.91</Version>", StringComparison.Ordinal) &&
         buildProps.Contains("<AssemblyVersion>0.9.91.0</AssemblyVersion>", StringComparison.Ordinal) &&
         buildProps.Contains("<FileVersion>0.9.91.0</FileVersion>", StringComparison.Ordinal) &&
-        buildProps.Contains("<InformationalVersion>v09.91.1</InformationalVersion>", StringComparison.Ordinal) &&
+        buildProps.Contains("<InformationalVersion>v09.91.2</InformationalVersion>", StringComparison.Ordinal) &&
         buildProps.Contains("<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>", StringComparison.Ordinal),
-        "Die zentralen .NET-Versionsmetadaten entsprechen nicht v09.91.1 / 0.9.91.");
+        "Die zentralen .NET-Versionsmetadaten entsprechen nicht v09.91.2 / 0.9.91.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestCentralNavigationSessionAvailabilityAsync()
+{
+    var source = ReadProjectSource("WebUI.Web/Components/Pages/Home.razor");
+
+    Assert(
+        source.Contains("private bool IsSessionAvailable()", StringComparison.Ordinal) &&
+        source.Contains("return _sessionId is null ||\n               UserSessions.IsActive(_sessionId);", StringComparison.Ordinal) &&
+        !source.Contains("CircuitConnection.IsConnected", StringComparison.Ordinal) &&
+        !source.Contains("@inject CircuitConnectionState CircuitConnection", StringComparison.Ordinal),
+        "Die Verfügbarkeit der logischen Benutzersitzung darf nicht an einen transienten Blazor-Circuit-Status gekoppelt sein.");
 
     return Task.CompletedTask;
 }

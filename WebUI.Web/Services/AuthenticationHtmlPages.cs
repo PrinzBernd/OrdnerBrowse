@@ -193,7 +193,7 @@ internal static class AuthenticationHtmlPages
                         <section class="signed-out-card" aria-labelledby="signed-out-title">
                             <h1 id="signed-out-title">Abgemeldet</h1>
                             <p>Die lokale OrdnerBrowse-Sitzung wurde beendet.</p>
-                            <p class="browser-notice">Zur vollständigen Beendigung der Anmeldung schließen Sie den Browser vollständig.</p>
+                            <p class="browser-notice">Eine erneute Anmeldung ist direkt möglich.</p>
                             <a class="login-again-button" href="/auth/login">Wieder anmelden</a>
                             <p class="secondary-notice">Andere bereits geöffnete OrdnerBrowse-Sitzungen bleiben weiterhin angemeldet.</p>
                         </section>

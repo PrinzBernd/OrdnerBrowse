@@ -11,6 +11,8 @@ public sealed class OidcChallengeAuthenticationHandler
     public const string SchemeName =
         "WebUiOidcChallengeGuard";
 
+    private const int BlockedRetryDelaySeconds = 3;
+
     public OidcChallengeAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
@@ -51,11 +53,18 @@ public sealed class OidcChallengeAuthenticationHandler
                     Response);
         }
 
+        var challengeId =
+            Guid.NewGuid().ToString("N");
+        properties.Items[
+            OidcChallengeGuard.ChallengeIdProperty] =
+                challengeId;
+
         var now =
             DateTimeOffset.UtcNow;
         var acquireResult =
             guard.TryAcquire(
                 browserContextKey,
+                challengeId,
                 now);
 
         if (acquireResult ==
@@ -72,7 +81,7 @@ public sealed class OidcChallengeAuthenticationHandler
             await WriteBlockedResponseAsync(
                 StatusCodes.Status409Conflict,
                 "Anmeldung läuft bereits",
-                "Für diesen Browser ist bereits eine sichere Anmeldung aktiv. Bitte schließen Sie zuerst den bereits begonnenen Anmeldevorgang ab.");
+                "Für diesen Browser ist bereits eine sichere Anmeldung aktiv. Der Status wird automatisch erneut geprüft.");
             return;
         }
 
@@ -95,7 +104,8 @@ public sealed class OidcChallengeAuthenticationHandler
         catch
         {
             if (guard.Release(
-                    browserContextKey))
+                    browserContextKey,
+                    challengeId))
             {
                 diagnosticLogger.LogInformation(
                     "OIDC-DIAG ChallengeGuardReleased; Grund: ChallengeStartFehler");
@@ -114,13 +124,29 @@ public sealed class OidcChallengeAuthenticationHandler
             statusCode;
         Response.ContentType =
             "text/html; charset=utf-8";
+        Response.Headers["Cache-Control"] =
+            "no-store, no-cache, max-age=0";
+        Response.Headers["Retry-After"] =
+            BlockedRetryDelaySeconds.ToString(
+                System.Globalization.CultureInfo.InvariantCulture);
 
         await Response.WriteAsync(
             $$"""
             <!doctype html>
             <html lang="de">
-            <head><meta charset="utf-8"><title>{{heading}}</title></head>
-            <body><main><h1>{{heading}}</h1><p>{{message}}</p><p><a href="/">Zur Startseite</a></p></main></body>
+            <head>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta http-equiv="refresh" content="{{BlockedRetryDelaySeconds}};url=/auth/login">
+                <title>{{heading}}</title>
+            </head>
+            <body>
+                <main>
+                    <h1>{{heading}}</h1>
+                    <p>{{message}}</p>
+                    <p><a href="/auth/login">Jetzt erneut prüfen</a></p>
+                </main>
+            </body>
             </html>
             """);
     }

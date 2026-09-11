@@ -22,9 +22,9 @@ Confidential details of a suspected vulnerability should not be published public
 
 Only neutral or neutralised example values may be used in a report. Passwords, API tokens, 2FA codes, secret contents, private keys, original documents, productive runtime files, or other confidential real-world data must not be submitted.
 
-A concrete security contact or private reporting channel will only be stated in this file once it has actually been established, is reachable, and is documented in the public repository.
+GitHub Private Vulnerability Reporting is enabled for confidential security reports in the public OrdnerBrowse repository. Suspected vulnerabilities that require confidential handling should be reported through this private GitHub reporting channel.
 
-Until such a reporting channel has been established, a non-existent or unconfirmed security channel must not be assumed.
+Additional security contacts or other private reporting channels will only be stated in this file once they have actually been established, are reachable, and are documented in the public repository.
 
 ## Required information
 

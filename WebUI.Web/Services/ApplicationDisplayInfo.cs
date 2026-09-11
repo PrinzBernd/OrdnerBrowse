@@ -5,7 +5,7 @@ public static class ApplicationDisplayInfo
     public const string ProductName = "OrdnerBrowse";
     public const string ProductDescription = "eine WebUI für paperless-ngx";
     public const string FullProductName = ProductName + " – " + ProductDescription;
-    public const string Version = "09.91.1";
+    public const string Version = "09.91.2";
     public const string PreRelease = "";
     public const string DiskStationTestProfileName = "DiskStationTest";
 

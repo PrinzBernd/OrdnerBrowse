@@ -6,6 +6,29 @@ their publicly relevant changes.
 Internal development states, local validation states, and versions preceding
 the first public release are not listed here as releases.
 
+## v09.91.2 – Navigation synchronisation and OIDC sign-in stability
+
+### Fixes
+
+- Running central navigation synchronisations are no longer aborted solely
+  because a Blazor circuit connection is temporarily disconnected and treated
+  as an unavailable user session.
+- The logical user session remains authoritative for an ongoing read-only
+  Paperless synchronisation; an explicit logout still revokes the session.
+- The cache format and read-only access to paperless-ngx remain unchanged.
+- The OIDC challenge guard now assigns an explicit owner to each running
+  challenge. Superseded or duplicate callbacks can no longer release a newer
+  sign-in or be accepted as its local ticket.
+- The protection window for historically observed parallel challenge starts is
+  limited to 15 seconds; a blocked sign-in page automatically rechecks after no
+  more than 3 seconds.
+- Once a valid OIDC callback has started, a separate 60-second window protects
+  the active callback and token exchange.
+- Local OrdnerBrowse logout rotates only the OIDC guard context of the current
+  browser profile; other browser contexts remain unaffected.
+- An already authenticated request to `/auth/login` no longer starts another
+  OIDC challenge.
+
 ## v09.91.1 – First public beta release
 
 ### Features

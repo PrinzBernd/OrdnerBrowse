@@ -22,9 +22,9 @@ Vertrauliche Details einer vermuteten Schwachstelle sollen nicht öffentlich in 
 
 Für eine Meldung dürfen ausschließlich neutrale beziehungsweise neutralisierte Beispielwerte verwendet werden. Kennwörter, API-Tokens, 2FA-Codes, Secret-Inhalte, private Schlüssel, Originaldokumente, produktive Laufzeitdateien oder andere vertrauliche Echtdaten dürfen nicht übermittelt werden.
 
-Ein konkreter Sicherheitskontakt oder privater Meldekanal wird in dieser Datei erst dann angegeben, wenn dieser im öffentlichen Repository tatsächlich eingerichtet, erreichbar und dokumentiert ist.
+Für vertrauliche Sicherheitsmeldungen ist im öffentlichen OrdnerBrowse-Repository GitHub Private Vulnerability Reporting aktiviert. Vermutete Schwachstellen, die vertraulich behandelt werden müssen, sollen über diesen privaten GitHub-Meldeweg gemeldet werden.
 
-Solange kein solcher Meldeweg eingerichtet ist, darf kein nicht vorhandener oder unbestätigter Sicherheitskanal vorausgesetzt werden.
+Zusätzliche Sicherheitskontakte oder andere private Meldewege werden in dieser Datei nur dann genannt, wenn sie tatsächlich eingerichtet, erreichbar und im öffentlichen Repository dokumentiert sind.
 
 ## Benötigte Informationen
 

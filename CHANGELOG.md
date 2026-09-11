@@ -6,6 +6,32 @@ OrdnerBrowse und deren öffentlich relevante Änderungen.
 Interne Entwicklungsstände, lokale Prüfstände und Versionen vor der ersten
 öffentlichen Veröffentlichung werden hier nicht als Releases geführt.
 
+## v09.91.2 – Stabilisierung von Navigationsabgleich und OIDC-Anmeldung
+
+### Korrekturen
+
+- Laufende zentrale Navigationsabgleiche werden nicht mehr allein wegen einer
+  vorübergehend getrennten Blazor-Circuit-Verbindung als nicht verfügbare
+  Benutzersitzung abgebrochen.
+- Für einen laufenden read-only Paperless-Abgleich bleibt die logische
+  Benutzersitzung maßgeblich; ein expliziter Logout widerruft die Sitzung
+  weiterhin.
+- Cacheformat und ausschließlich lesender Zugriff auf paperless-ngx bleiben
+  unverändert.
+- Der OIDC-Challenge-Guard ordnet eine laufende Anmeldung jetzt einer eindeutigen
+  Challenge zu. Veraltete oder doppelte Rücksprünge können dadurch keine neuere
+  Anmeldung mehr freigeben oder als lokales Ticket übernehmen.
+- Das Schutzfenster gegen historisch beobachtete parallele Challenge-Starts ist
+  auf 15 Sekunden begrenzt; eine blockierte Anmeldeseite prüft spätestens nach
+  3 Sekunden automatisch erneut.
+- Sobald ein gültiger OIDC-Callback begonnen hat, schützt ein separates
+  60-Sekunden-Fenster den laufenden Rücksprung beziehungsweise Tokenaustausch.
+- Beim lokalen OrdnerBrowse-Logout wird ausschließlich der OIDC-Guard-Kontext
+  des aktuellen Browserprofils rotiert; andere Browserkontexte bleiben
+  unberührt.
+- Ein bereits authentifizierter Aufruf von `/auth/login` startet keine weitere
+  OIDC-Challenge.
+
 ## v09.91.1 – Erste öffentliche Beta-Veröffentlichung
 
 ### Funktionen
