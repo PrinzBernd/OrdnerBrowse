@@ -6,6 +6,33 @@ OrdnerBrowse und deren öffentlich relevante Änderungen.
 Interne Entwicklungsstände, lokale Prüfstände und Versionen vor der ersten
 öffentlichen Veröffentlichung werden hier nicht als Releases geführt.
 
+## v09.92.0 – macOS-Desktopunterstützung und plattformübergreifende Releasebasis
+
+### Neue Funktionen
+
+- OrdnerBrowse kann zusätzlich zum Containerbetrieb als native macOS-Desktopanwendung ausgeführt werden.
+- Die macOS-Anwendung verwendet eine native Swift/AppKit-Hülle mit eingebetteter Webansicht und startet die OrdnerBrowse-Webanwendung lokal auf dem Mac.
+- Paperless-Basisadresse, Paperless-Benutzerzuordnung und persönliches API-Token werden im MacDesktop-Betrieb lokal verwaltet; sicherheitsrelevante Benutzerdaten werden im macOS-Schlüsselbund gespeichert.
+- Die Einrichtung und Verwaltung der persönlichen Paperless-Verbindung wurde für den MacDesktop-Betrieb erweitert.
+- Containerbetrieb und MacDesktop verwenden weiterhin dieselbe fachliche OrdnerBrowse-Anwendung und denselben ausschließlich lesenden Zugriff auf paperless-ngx.
+
+### Betrieb und Veröffentlichung
+
+- Der Release enthält Container-Artefakte für `linux/arm64` und `linux/amd64`.
+- Zusätzlich wird eine macOS-Testversion bereitgestellt.
+- Die macOS-Testversion ist derzeit nicht mit einer Apple Developer ID signiert und nicht von Apple notarisiert. macOS kann die Anwendung deshalb beim ersten Start blockieren. Nach bewusster Freigabe unter **Systemeinstellungen → Datenschutz & Sicherheit** kann sie dennoch geöffnet und getestet werden.
+- Der Projektstatus bleibt **Public Beta / Pre-1.0**.
+
+### Dokumentation
+
+- README und Screenshots wurden für die öffentliche Projektseite überarbeitet und erweitert.
+- Die Beschreibung der Bereiche wurde an die aus paperless-ngx übernommenen Speicherpfade und deren individuelle Bezeichnungen angepasst.
+
+### Sicherheit
+
+- Der fachliche Zugriff auf paperless-ngx bleibt ausschließlich lesend.
+- Dokumente, Metadaten, Benutzer und Rechte werden weiterhin ausschließlich von paperless-ngx verwaltet.
+
 ## v09.91.2 – Stabilisierung von Navigationsabgleich und OIDC-Anmeldung
 
 ### Korrekturen

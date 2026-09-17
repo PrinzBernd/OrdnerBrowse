@@ -12,7 +12,9 @@ public static class LocalDevelopmentAuthenticationEndpoints
     {
         app.MapGet(
             "/local-login",
-            (HttpContext httpContext) =>
+            (
+                HttpContext httpContext,
+                LocalKeychainPaperlessSettings keychainSettings) =>
             {
                 if (httpContext.User.Identity?.IsAuthenticated == true)
                 {
@@ -21,8 +23,95 @@ public static class LocalDevelopmentAuthenticationEndpoints
 
                 return Results.Content(
                     CreateLocalLoginPage(
-                        httpContext.Request.Query["status"].ToString()),
+                        httpContext.Request.Query["status"].ToString(),
+                        keychainSettings.IsMacDesktop),
                     "text/html; charset=utf-8");
+            })
+            .AllowAnonymous();
+
+        app.MapGet(
+            "/local-auth/login",
+            async (
+                HttpContext httpContext,
+                LocalKeychainPaperlessSettings keychainSettings,
+                CancellationToken cancellationToken) =>
+            {
+                if (!keychainSettings.IsMacDesktop)
+                {
+                    return Results.Redirect("/local-login?status=unknown");
+                }
+
+                string username;
+                try
+                {
+                    username =
+                        LocalKeychainPaperlessSettings.NormalizeMacDesktopUsername(
+                            httpContext.Request.Query["username"].ToString());
+                }
+                catch
+                {
+                    return Results.Redirect("/local-login?status=unknown");
+                }
+
+                try
+                {
+                    var status = await keychainSettings.GetMacDesktopStatusAsync(
+                        username,
+                        cancellationToken);
+
+                    if (!status.IsConfigured)
+                    {
+                        var provisioningKey =
+                            LocalKeychainPaperlessSettings.CreateMacDesktopProvisioningTechnicalUserKey(
+                                username);
+                        await SignInMacDesktopAsync(
+                            httpContext,
+                            username,
+                            provisioningKey);
+
+                        return Results.Redirect("/auth/paperless-connection");
+                    }
+
+                    var credential = await keychainSettings.GetMacDesktopCredentialAsync(
+                        username,
+                        cancellationToken);
+                    var identity = await keychainSettings.GetMacDesktopIdentityAsync(
+                        username,
+                        cancellationToken);
+
+                    await SignInMacDesktopAsync(
+                        httpContext,
+                        username,
+                        credential.TechnicalUserKey);
+
+                    return Results.Redirect(
+                        string.Equals(
+                            identity.Username,
+                            username,
+                            StringComparison.Ordinal)
+                            ? "/"
+                            : "/auth/paperless-connection");
+                }
+                catch (InvalidOperationException exception)
+                    when (string.Equals(
+                        exception.Message,
+                        PaperlessApiClient.UiSettingsPermissionMessage,
+                        StringComparison.Ordinal))
+                {
+                    return Results.Redirect("/local-login?status=uisettings-forbidden");
+                }
+                catch (InvalidOperationException exception)
+                    when (string.Equals(
+                        exception.Message,
+                        LocalKeychainPaperlessSettings.PaperlessUserIdMismatchMessage,
+                        StringComparison.Ordinal))
+                {
+                    return Results.Redirect("/local-login?status=identity-mismatch");
+                }
+                catch
+                {
+                    return Results.Redirect("/local-login?status=failed");
+                }
             })
             .AllowAnonymous();
 
@@ -35,6 +124,11 @@ public static class LocalDevelopmentAuthenticationEndpoints
                 IHttpClientFactory httpClientFactory,
                 CancellationToken cancellationToken) =>
             {
+                if (keychainSettings.IsMacDesktop)
+                {
+                    return Results.Redirect("/local-login?status=unknown");
+                }
+
                 if (!LocalTestUserSettings.TryGetUser(alias, out var localUser))
                 {
                     return Results.Redirect("/local-login?status=unknown");
@@ -86,6 +180,75 @@ public static class LocalDevelopmentAuthenticationEndpoints
             })
             .AllowAnonymous();
 
+        app.MapGet(
+            "/local-auth/macdesktop-refresh",
+            async (
+                HttpContext httpContext,
+                LocalKeychainPaperlessSettings keychainSettings,
+                CancellationToken cancellationToken) =>
+            {
+                if (!keychainSettings.IsMacDesktop)
+                {
+                    return Results.Redirect("/");
+                }
+
+                try
+                {
+                    var username =
+                        LocalKeychainPaperlessSettings.NormalizeMacDesktopUsername(
+                            httpContext.Request.Query["username"].ToString());
+                    var status = await keychainSettings.GetMacDesktopStatusAsync(
+                        username,
+                        cancellationToken);
+
+                    if (!status.IsConfigured)
+                    {
+                        return Results.Redirect("/local-login?status=failed");
+                    }
+
+                    var credential = await keychainSettings.GetMacDesktopCredentialAsync(
+                        username,
+                        cancellationToken);
+                    var identity = await keychainSettings.GetMacDesktopIdentityAsync(
+                        username,
+                        cancellationToken);
+
+                    await SignInMacDesktopAsync(
+                        httpContext,
+                        username,
+                        credential.TechnicalUserKey);
+
+                    return Results.Redirect(
+                        string.Equals(
+                            identity.Username,
+                            username,
+                            StringComparison.Ordinal)
+                            ? "/"
+                            : "/auth/paperless-connection");
+                }
+                catch (InvalidOperationException exception)
+                    when (string.Equals(
+                        exception.Message,
+                        PaperlessApiClient.UiSettingsPermissionMessage,
+                        StringComparison.Ordinal))
+                {
+                    return Results.Redirect("/local-login?status=uisettings-forbidden");
+                }
+                catch (InvalidOperationException exception)
+                    when (string.Equals(
+                        exception.Message,
+                        LocalKeychainPaperlessSettings.PaperlessUserIdMismatchMessage,
+                        StringComparison.Ordinal))
+                {
+                    return Results.Redirect("/local-login?status=identity-mismatch");
+                }
+                catch
+                {
+                    return Results.Redirect("/local-login?status=failed");
+                }
+            })
+            .RequireAuthorization();
+
         app.MapPost(
             "/local-auth/logout",
             async (
@@ -110,26 +273,80 @@ public static class LocalDevelopmentAuthenticationEndpoints
             .RequireAuthorization();
     }
 
+    private static async Task SignInMacDesktopAsync(
+        HttpContext httpContext,
+        string username,
+        string technicalUserKey)
+    {
+        var identity = new ClaimsIdentity(
+            new[]
+            {
+                new Claim(ClaimTypes.Name, username),
+                new Claim(LocalTestUserSettings.AliasClaimType, username),
+                new Claim(
+                    LocalTestUserSettings.TechnicalUserKeyClaimType,
+                    technicalUserKey),
+                new Claim(
+                    LocalTestUserSettings.SessionIdClaimType,
+                    Guid.NewGuid().ToString("N"))
+            },
+            LocalTestUserSettings.AuthenticationScheme);
+
+        await httpContext.SignInAsync(
+            LocalTestUserSettings.AuthenticationScheme,
+            new ClaimsPrincipal(identity),
+            new AuthenticationProperties
+            {
+                IsPersistent = false,
+                RedirectUri = "/"
+            });
+    }
+
     private static string CreateLocalLoginPage(
-        string? status)
+        string? status,
+        bool isMacDesktop)
     {
         var productName = System.Net.WebUtility.HtmlEncode(
             ApplicationDisplayInfo.FullProductName);
         var statusAndVersion = System.Net.WebUtility.HtmlEncode(
             ApplicationDisplayInfo.StatusAndVersion);
-        var buttons = string.Join(
-            Environment.NewLine,
-            LocalTestUserSettings.GetUsers().Select(user =>
-                $"<a class=\"login-button\" href=\"/local-auth/login/{user.Alias}\">{System.Net.WebUtility.HtmlEncode(user.DisplayName)}</a>"));
         var statusMessage = status switch
         {
-            "unknown" => "Die gewählte lokale Testidentität ist nicht verfügbar.",
+            "unknown" => isMacDesktop
+                ? "Bitte geben Sie einen gültigen Paperless-Benutzernamen ein."
+                : "Die gewählte lokale Testidentität ist nicht verfügbar.",
             "failed" => "Die lokale Schlüsselbundzuordnung fehlt, ist nicht konsistent oder das persönliche Token wurde von Paperless-ngx abgelehnt.",
+            "uisettings-forbidden" => PaperlessApiClient.UiSettingsPermissionMessage,
+            "identity-mismatch" => LocalKeychainPaperlessSettings.PaperlessUserIdMismatchMessage,
             _ => null
         };
         var statusBlock = string.IsNullOrWhiteSpace(statusMessage)
             ? string.Empty
             : $"<p class=\"status-message\" role=\"alert\">{System.Net.WebUtility.HtmlEncode(statusMessage)}</p>";
+
+        var loginContent = isMacDesktop
+            ? """
+                <form class="mac-login" method="get" action="/local-auth/login">
+                    <label for="paperless-username">Paperless-Benutzername</label>
+                    <input id="paperless-username" name="username" type="text" autocomplete="username" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="256" required>
+                    <button class="login-button" type="submit">Anmelden</button>
+                </form>
+                <p class="notice">Der Paperless-Benutzername dient zur lokalen Zuordnung. Das persönliche API-Token bleibt über die stabile Paperless-Benutzer-ID im macOS-Schlüsselbund gebunden und wird nicht in der Anmeldung eingegeben.</p>
+                """
+            : $"""
+                <div class="buttons">{string.Join(
+                    Environment.NewLine,
+                    LocalTestUserSettings.GetUsers().Select(user =>
+                        $"<a class=\"login-button\" href=\"/local-auth/login/{user.Alias}\">{System.Net.WebUtility.HtmlEncode(user.DisplayName)}</a>"))}</div>
+                <p class="notice">Diese Auswahl ist ausschließlich für den lokalen Entwicklungsbetrieb bestimmt. Das persönliche API-Token bleibt im macOS-Schlüsselbund.</p>
+                """;
+
+        var title = isMacDesktop
+            ? "Lokale Anmeldung"
+            : "Lokale Testanmeldung";
+        var subtitle = isMacDesktop
+            ? "Geben Sie Ihren Paperless-Benutzernamen ein."
+            : "Wählen Sie eine lokale Testidentität für diese Sitzung.";
 
         return $$"""
             <!doctype html>
@@ -137,7 +354,7 @@ public static class LocalDevelopmentAuthenticationEndpoints
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
-                <title>Lokale Testanmeldung · {{productName}}</title>
+                <title>{{title}} · {{productName}}</title>
                 <style>
                     :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: light; }
                     * { box-sizing: border-box; }
@@ -152,7 +369,10 @@ public static class LocalDevelopmentAuthenticationEndpoints
                     .subtitle { margin: 0 0 1.25rem; color: #5b6472; text-align: center; }
                     .status-message { margin: 0 0 1rem; padding: .8rem 1rem; border: 1px solid #9b2c2c; border-radius: 8px; background: #fff5f5; color: #742a2a; }
                     .buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
-                    .login-button { display: block; padding: 1rem; border-radius: 8px; background: #102d5c; color: white; text-align: center; text-decoration: none; font-weight: 700; }
+                    .mac-login { display: grid; gap: .8rem; }
+                    .mac-login label { font-weight: 700; }
+                    .mac-login input { width: 100%; padding: .8rem; border: 1px solid #aeb7c5; border-radius: 8px; font: inherit; }
+                    .login-button { display: block; padding: 1rem; border: 0; border-radius: 8px; background: #102d5c; color: white; text-align: center; text-decoration: none; font: inherit; font-weight: 700; cursor: pointer; }
                     .login-button:hover { background: #26306f; }
                     .notice { margin: 1.25rem 0 0; padding: 1rem; border: 1px solid #26306f; border-radius: 8px; background: #eef1f8; }
                     @media (max-width: 520px) { .buttons { grid-template-columns: 1fr; } }
@@ -167,11 +387,10 @@ public static class LocalDevelopmentAuthenticationEndpoints
                     </header>
                     <div class="page-area">
                         <main>
-                            <h1>Lokale Testanmeldung</h1>
-                            <p class="subtitle">Wählen Sie eine lokale Testidentität für diese Sitzung.</p>
+                            <h1>{{title}}</h1>
+                            <p class="subtitle">{{subtitle}}</p>
                             {{statusBlock}}
-                            <div class="buttons">{{buttons}}</div>
-                            <p class="notice">Diese Auswahl ist ausschließlich für den lokalen Entwicklungsbetrieb bestimmt. Das persönliche API-Token bleibt im macOS-Schlüsselbund.</p>
+                            {{loginContent}}
                         </main>
                     </div>
                 </div>
@@ -179,5 +398,4 @@ public static class LocalDevelopmentAuthenticationEndpoints
             </html>
             """;
     }
-
 }

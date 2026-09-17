@@ -5,9 +5,8 @@ public static class ApplicationDisplayInfo
     public const string ProductName = "OrdnerBrowse";
     public const string ProductDescription = "eine WebUI für paperless-ngx";
     public const string FullProductName = ProductName + " – " + ProductDescription;
-    public const string Version = "09.91.2";
+    public const string Version = "09.92.0";
     public const string PreRelease = "";
-    public const string DiskStationTestProfileName = "DiskStationTest";
 
     private static string _statusText = "Produktionsbetrieb";
 
@@ -23,15 +22,18 @@ public static class ApplicationDisplayInfo
 
     public static void Configure(
         bool isDevelopment,
-        bool isProfileB,
-        bool isDiskStationTest)
+        bool isMacDesktop,
+        bool isArm64Reference,
+        bool isAmd64Reference)
     {
         _statusText = isDevelopment
             ? "Entwicklungsumgebung"
-            : isProfileB
-                ? "ARM64-Referenzumgebung"
-                : isDiskStationTest
-                    ? "AMD64-Referenzumgebung"
-                    : "Produktionsbetrieb";
+            : isMacDesktop
+                ? "Mac-Desktop"
+                : isArm64Reference
+                    ? "ARM64-Referenzumgebung"
+                    : isAmd64Reference
+                        ? "AMD64-Referenzumgebung"
+                        : "Produktionsbetrieb";
     }
 }

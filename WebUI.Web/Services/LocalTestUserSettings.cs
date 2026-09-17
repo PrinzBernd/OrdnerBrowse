@@ -28,9 +28,10 @@ public sealed class LocalTestUserSettings
     public static bool IsEnabled(
         IWebHostEnvironment environment,
         IConfiguration configuration,
-        bool oidcEnabled) =>
+        bool oidcEnabled,
+        bool isMacDesktop) =>
         !oidcEnabled &&
-        environment.IsDevelopment() &&
+        (environment.IsDevelopment() || isMacDesktop) &&
         configuration.GetValue<bool>("LocalMultiUser:Enabled");
 
     public static IReadOnlyCollection<LocalTestUserDefinition> GetUsers() =>

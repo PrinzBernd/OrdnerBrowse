@@ -23,7 +23,7 @@ public sealed class LocalTestUserKeychainTokenProvider : IPaperlessTokenProvider
         if (user?.Identity?.IsAuthenticated != true)
         {
             throw new InvalidOperationException(
-                "Für den lokalen Mehrbenutzertest ist eine Testanmeldung erforderlich.");
+                "Für den lokalen Mehrbenutzerbetrieb ist eine Anmeldung erforderlich.");
         }
 
         var alias =
@@ -35,18 +35,37 @@ public sealed class LocalTestUserKeychainTokenProvider : IPaperlessTokenProvider
             user.FindFirstValue(
                 LocalTestUserSettings.SessionIdClaimType);
 
-        if (!LocalTestUserSettings.TryGetUser(alias, out var localUser) ||
-            string.IsNullOrWhiteSpace(technicalUserKey) ||
+        if (string.IsNullOrWhiteSpace(technicalUserKey) ||
             string.IsNullOrWhiteSpace(sessionId) ||
             !Guid.TryParseExact(sessionId, "N", out _))
         {
             throw new InvalidOperationException(
-                "Die lokale Testanmeldung enthält keine gültige technische Benutzer- und Sitzungszuordnung.");
+                "Die lokale Anmeldung enthält keine gültige technische Benutzer- und Sitzungszuordnung.");
         }
 
-        var credential = await _keychainSettings.GetCredentialAsync(
-            localUser,
-            cancellationToken);
+        LocalTestUserCredential credential;
+
+        if (_keychainSettings.IsMacDesktop)
+        {
+            var username =
+                LocalKeychainPaperlessSettings.NormalizeMacDesktopUsername(
+                    alias ?? string.Empty);
+            credential = await _keychainSettings.GetMacDesktopCredentialAsync(
+                username,
+                cancellationToken);
+        }
+        else
+        {
+            if (!LocalTestUserSettings.TryGetUser(alias, out var localUser))
+            {
+                throw new InvalidOperationException(
+                    "Die lokale Testanmeldung enthält keine gültige Testidentität.");
+            }
+
+            credential = await _keychainSettings.GetCredentialAsync(
+                localUser,
+                cancellationToken);
+        }
 
         if (!string.Equals(
                 technicalUserKey,
@@ -54,7 +73,7 @@ public sealed class LocalTestUserKeychainTokenProvider : IPaperlessTokenProvider
                 StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "Die lokale Testanmeldung stimmt nicht mehr mit der aktuellen Schlüsselbundzuordnung überein.");
+                "Die lokale Anmeldung stimmt nicht mehr mit der aktuellen Schlüsselbundzuordnung überein.");
         }
 
         return new PaperlessTokenContext(

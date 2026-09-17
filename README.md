@@ -51,7 +51,7 @@ Alle Zugriffe auf Dokumente und fachliche Daten in paperless-ngx erfolgen aussch
 
 ## Schnellstart
 
-OrdnerBrowse wird als Containeranwendung betrieben. Für die Einrichtung werden Docker Compose, eine erreichbare paperless-ngx-Instanz und eine konfigurierte OIDC-Anmeldung benötigt.
+OrdnerBrowse kann als Containeranwendung betrieben werden. Für `v09.92.0` steht zusätzlich eine native macOS-Testversion zur Verfügung. Für die Container-Einrichtung werden Docker Compose, eine erreichbare paperless-ngx-Instanz und eine konfigurierte OIDC-Anmeldung benötigt.
 
 Die vollständige Schritt-für-Schritt-Anleitung befindet sich in der
 [Dokumentation zum Containerbetrieb](Containerbetrieb/README_CONTAINERBETRIEB.md).
@@ -115,6 +115,16 @@ Die allgemeine Beschreibung der Konfiguration befindet sich in:
 Die konkreten Laufzeit- und Containerparameter sind ausführlich dokumentiert in:
 
 [Dokumentation zum Containerbetrieb](Containerbetrieb/README_CONTAINERBETRIEB.md)
+
+## macOS-Testversion
+
+Zusätzlich zu den Container-Artefakten steht für `v09.92.0` eine native macOS-Testversion von OrdnerBrowse zur Verfügung.
+
+Die Anwendung ist derzeit **nicht mit einer Apple Developer ID signiert und nicht von Apple notarisiert**. macOS kann den ersten Start deshalb aus Sicherheitsgründen blockieren.
+
+Die Anwendung kann nach bewusster Freigabe unter **Systemeinstellungen → Datenschutz & Sicherheit** dennoch geöffnet und als Testversion verwendet werden.
+
+Die macOS-Version verwendet dieselbe OrdnerBrowse-Anwendung und arbeitet gegenüber paperless-ngx ebenfalls ausschließlich lesend.
 
 ## Sicherheit
 

@@ -1,10 +1,12 @@
 @page "/"
 @rendermode InteractiveServer
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.Extensions.DependencyInjection
 @using WebUI.Web.Services
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject OidcAuthenticationSettings OidcSettings
 @inject IPaperlessConnectionTokenStore TokenStore
+@inject IServiceProvider Services
 @inject NavigationManager Navigation
 
 <PageTitle>Start und Paperless-Verbindung</PageTitle>
@@ -43,6 +45,13 @@
                 <p class="connection-value">@_displayName</p>
             </div>
         }
+        else if (_isMacDesktop)
+        {
+            <div class="connection-card">
+                <h2>Mac-Desktop</h2>
+                <p class="connection-value">@_displayName</p>
+            </div>
+        }
         else
         {
             <div class="connection-card">
@@ -71,6 +80,10 @@
                     {
                         <text>Das persönliche API-Token ist verschlüsselt serverseitig hinterlegt und wird nicht angezeigt.</text>
                     }
+                    else if (_isMacDesktop)
+                    {
+                        <text>Die Paperless-Basisadresse gilt gemeinsam für MacDesktop. Paperless-Benutzer-ID und persönliches API-Token sind sicher benutzerbezogen im macOS-Schlüsselbund hinterlegt. Das API-Token wird nicht angezeigt.</text>
+                    }
                     else
                     {
                         <text>Das persönliche API-Token ist sicher im macOS-Schlüsselbund hinterlegt und wird nicht angezeigt.</text>
@@ -85,7 +98,7 @@
                         @(_isOpening ? "OrdnerBrowse wird geöffnet …" : "OrdnerBrowse öffnen")
                     </button>
                     <a class="btn btn-secondary" href="/auth/paperless-connection">
-                        API-Token ändern
+                        @(_isMacDesktop ? "Paperless-Verbindung verwalten" : "API-Token ändern")
                     </a>
                 </div>
 
@@ -104,12 +117,18 @@
             {
                 <p class="connection-missing">Noch nicht eingerichtet</p>
                 <p>
-                    Vor der ersten Nutzung muss das persönliche Paperless-API-Token
-                    sicher hinterlegt werden.
+                    @if (_isMacDesktop)
+                    {
+                        <text>Vor der ersten Nutzung müssen Paperless-Basisadresse, Paperless-Benutzername und persönliches API-Token sicher eingerichtet werden.</text>
+                    }
+                    else
+                    {
+                        <text>Vor der ersten Nutzung muss das persönliche Paperless-API-Token sicher hinterlegt werden.</text>
+                    }
                 </p>
 
                 <a class="btn btn-primary" href="/auth/paperless-connection">
-                    API-Token einrichten
+                    @(_isMacDesktop ? "Paperless-Verbindung einrichten" : "API-Token einrichten")
                 </a>
             }
         </div>
@@ -121,6 +140,7 @@
     private bool _isAuthenticated;
     private bool _isConfigured;
     private bool _statusError;
+    private bool _isMacDesktop;
     private bool _isLoginStarting;
     private bool _isOpening;
     private string _openingTitle = "OrdnerBrowse wird geöffnet …";
@@ -179,6 +199,9 @@
 
     protected override async Task OnInitializedAsync()
     {
+        _isMacDesktop =
+            Services.GetService<LocalKeychainPaperlessSettings>()?.IsMacDesktop == true;
+
         var authenticationState =
             await AuthenticationStateProvider.GetAuthenticationStateAsync();
 

@@ -79,21 +79,27 @@ var proxyGuardSettings =
         builder.Configuration);
 var runtimeProfile =
     builder.Configuration["WebUi:RuntimeProfile"]?.Trim();
-var isProfileB =
+var isMacDesktop =
     string.Equals(
         runtimeProfile,
-        "ProfileB",
+        RuntimeProfile.MacDesktop,
         StringComparison.Ordinal);
-var isDiskStationTest =
+var isArm64Reference =
     string.Equals(
         runtimeProfile,
-        ApplicationDisplayInfo.DiskStationTestProfileName,
+        RuntimeProfile.Arm64Reference,
+        StringComparison.Ordinal);
+var isAmd64Reference =
+    string.Equals(
+        runtimeProfile,
+        RuntimeProfile.Amd64Reference,
         StringComparison.Ordinal);
 var localMultiUserEnabled =
     LocalTestUserSettings.IsEnabled(
         builder.Environment,
         builder.Configuration,
-        oidcSettings.Enabled);
+        oidcSettings.Enabled,
+        isMacDesktop);
 
 if (localMultiUserEnabled)
 {
@@ -827,8 +833,9 @@ var app = builder.Build();
 
 ApplicationDisplayInfo.Configure(
     app.Environment.IsDevelopment(),
-    isProfileB,
-    isDiskStationTest);
+    isMacDesktop,
+    isArm64Reference,
+    isAmd64Reference);
 
 if (proxyGuardSettings.Enabled)
 {
@@ -903,7 +910,27 @@ if (oidcSettings.Enabled || localMultiUserEnabled)
 
 app.UseAntiforgery();
 
-app.MapStaticAssets();
+var macDesktopContentRoot =
+    Environment.GetEnvironmentVariable(
+        "ASPNETCORE_CONTENTROOT")?.Trim();
+var macDesktopStaticAssetsManifestPath =
+    isMacDesktop &&
+    !string.IsNullOrWhiteSpace(
+        macDesktopContentRoot)
+        ? Path.Combine(
+            builder.Environment.ContentRootPath,
+            "WebUI.Web.staticwebassets.endpoints.json")
+        : null;
+
+if (macDesktopStaticAssetsManifestPath is not null)
+{
+    app.MapStaticAssets(
+        macDesktopStaticAssetsManifestPath);
+}
+else
+{
+    app.MapStaticAssets();
+}
 
 app.MapGet(
     "/healthz",

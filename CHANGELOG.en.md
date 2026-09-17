@@ -6,6 +6,33 @@ their publicly relevant changes.
 Internal development states, local validation states, and versions preceding
 the first public release are not listed here as releases.
 
+## v09.92.0 – macOS desktop support and cross-platform release base
+
+### New features
+
+- OrdnerBrowse can now be run as a native macOS desktop application in addition to container operation.
+- The macOS application uses a native Swift/AppKit wrapper with an embedded web view and starts the OrdnerBrowse web application locally on the Mac.
+- In MacDesktop mode, the Paperless base URL, Paperless user association, and personal API token are managed locally; security-relevant user data is stored in the macOS Keychain.
+- Setup and management of the personal Paperless connection have been extended for MacDesktop operation.
+- Container operation and MacDesktop continue to use the same functional OrdnerBrowse application and the same read-only access to paperless-ngx.
+
+### Operation and release
+
+- The release provides container artifacts for `linux/arm64` and `linux/amd64`.
+- A macOS test version is also provided.
+- The macOS test version is currently not signed with an Apple Developer ID and is not notarized by Apple. macOS may therefore block the application on first launch. After explicitly allowing it under **System Settings → Privacy & Security**, the application can still be opened and tested.
+- The project remains **Public Beta / Pre-1.0**.
+
+### Documentation
+
+- The README and screenshots have been revised and expanded for the public project page.
+- The description of areas has been aligned with the storage paths and individual labels provided by paperless-ngx.
+
+### Security
+
+- Functional access to paperless-ngx remains read-only.
+- Documents, metadata, users, and permissions continue to be managed exclusively by paperless-ngx.
+
 ## v09.91.2 – Navigation synchronisation and OIDC sign-in stability
 
 ### Fixes

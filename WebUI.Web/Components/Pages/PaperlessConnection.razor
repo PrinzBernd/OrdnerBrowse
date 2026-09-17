@@ -1,8 +1,13 @@
 @page "/auth/paperless-connection"
 @rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components.Authorization
 @using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.Extensions.DependencyInjection
+@using WebUI.Infrastructure
 @using WebUI.Web.Services
 @inject IPaperlessConnectionTokenStore TokenStore
+@inject IServiceProvider Services
+@inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NavigationManager Navigation
 @inject ILogger<PaperlessConnection> Logger
 
@@ -11,7 +16,32 @@
 <section class="token-setup" aria-labelledby="token-setup-title">
     <h1 id="token-setup-title">Persönliche Paperless-Verbindung</h1>
 
-    @if (_preparedToken is null)
+    @if (_isLoading)
+    {
+        <p role="status">Verbindungsdaten werden geladen …</p>
+    }
+    else if (_isMacDesktop && _detectedUsername is not null)
+    {
+        <div class="alert alert-warning" role="alert">
+            Der Paperless-Benutzername wurde geändert. Der Benutzername wird auf
+            <strong>@_detectedUsername</strong> geändert.
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(_message))
+        {
+            <div class="alert alert-warning" role="alert">@_message</div>
+        }
+
+        <div class="token-actions">
+            <button class="btn btn-primary"
+                    type="button"
+                    disabled="@_isBusy"
+                    @onclick="ConfirmDetectedUsernameChangeAsync">
+                @(_isBusy ? "Wird geändert …" : "OK")
+            </button>
+        </div>
+    }
+    else if (_preparedToken is null && _preparedMacDesktopConnection is null)
     {
         <p>
             Das API-Token wird ausschließlich für diese bewusste Einrichtung
@@ -22,8 +52,37 @@
         <EditForm Model="_input" OnValidSubmit="PrepareAsync" FormName="paperless-token-setup">
             <DataAnnotationsValidator />
 
+            @if (_isMacDesktop)
+            {
+                <div class="token-field">
+                    <label for="paperless-base-url">Paperless-Basisadresse</label>
+                    <InputText id="paperless-base-url"
+                               class="form-control"
+                               type="url"
+                               autocomplete="url"
+                               autocorrect="off"
+                               autocapitalize="off"
+                               spellcheck="false"
+                               @bind-Value="_input.BaseUrl" />
+                </div>
+
+                <div class="token-field">
+                    <label for="paperless-username">Paperless-Benutzername</label>
+                    <InputText id="paperless-username"
+                               class="form-control"
+                               type="text"
+                               autocomplete="username"
+                               autocorrect="off"
+                               autocapitalize="off"
+                               spellcheck="false"
+                               @bind-Value="_input.Username" />
+                </div>
+            }
+
             <div class="token-field">
-                <label for="paperless-token">API-Token</label>
+                <label for="paperless-token">
+                    @(_isMacDesktop && _isConfigured ? "Neues API-Token (nur bei Änderung)" : "API-Token")
+                </label>
                 <InputText id="paperless-token"
                            class="form-control"
                            type="password"
@@ -35,7 +94,9 @@
             </div>
 
             <div class="token-field">
-                <label for="paperless-token-confirmation">API-Token wiederholen</label>
+                <label for="paperless-token-confirmation">
+                    @(_isMacDesktop && _isConfigured ? "Neues API-Token wiederholen" : "API-Token wiederholen")
+                </label>
                 <InputText id="paperless-token-confirmation"
                            class="form-control"
                            type="password"
@@ -46,6 +107,16 @@
                            @bind-Value="_input.Confirmation" />
             </div>
 
+            @if (_isMacDesktop && _isConfigured)
+            {
+                <p>
+                    Lassen Sie beide Token-Felder leer, wenn nur Basisadresse
+                    oder Benutzername korrigiert werden sollen. Die Basisadresse
+                    gilt für MacDesktop insgesamt. Das vorhandene API-Token wird
+                    nicht angezeigt und bleibt an die Paperless-Benutzer-ID gebunden.
+                </p>
+            }
+
             @if (!string.IsNullOrWhiteSpace(_message))
             {
                 <div class="alert alert-warning" role="alert">@_message</div>
@@ -55,7 +126,7 @@
                 <button class="btn btn-primary"
                         type="submit"
                         disabled="@_isBusy">
-                    @(_isBusy ? "Wird geprüft …" : "Token prüfen")
+                    @(_isBusy ? "Wird geprüft …" : "Verbindung prüfen")
                 </button>
                 <a class="btn btn-secondary" href="/">Abbrechen</a>
             </div>
@@ -64,15 +135,23 @@
     else
     {
         <div class="alert alert-success" role="status">
-            Dieser Token ist gültig und wird von Paperless-ngx akzeptiert.
+            Die vorbereitete Paperless-Verbindung wurde read-only geprüft.
         </div>
 
         <p>
-            Die Prüfung hat ausschließlich bestätigt, dass Paperless-ngx
-            dieses Token akzeptiert. Erst mit der folgenden ausdrücklichen
-            Bestätigung wird die persönliche Zuordnung angelegt oder sicher
-            ersetzt.
+            Erst mit der folgenden ausdrücklichen Bestätigung wird die
+            persönliche Zuordnung angelegt oder sicher ersetzt.
         </p>
+
+        @if (_isMacDesktop && !string.Equals(_originalUsername, _input.Username, StringComparison.Ordinal))
+        {
+            <p>
+                Der Paperless-Benutzername wird von
+                <strong>@_originalUsername</strong> auf
+                <strong>@_input.Username</strong> geändert. Das API-Token bleibt
+                an die unveränderte Paperless-Benutzer-ID gebunden.
+            </p>
+        }
 
         @if (!string.IsNullOrWhiteSpace(_message))
         {
@@ -99,13 +178,71 @@
 @code {
     private readonly TokenInputModel _input = new();
     private PreparedPaperlessToken? _preparedToken;
+    private PreparedMacDesktopConnection? _preparedMacDesktopConnection;
+    private LocalKeychainPaperlessSettings? _localKeychainSettings;
+    private bool _isLoading = true;
+    private bool _isMacDesktop;
+    private bool _isConfigured;
     private bool _isBusy;
     private string? _message;
+    private string? _detectedUsername;
+    private string _originalUsername = string.Empty;
 
+    protected override async Task OnInitializedAsync()
+    {
+        _localKeychainSettings =
+            Services.GetService<LocalKeychainPaperlessSettings>();
+        _isMacDesktop =
+            _localKeychainSettings?.IsMacDesktop == true;
+
+        if (_isMacDesktop && _localKeychainSettings is not null)
+        {
+            try
+            {
+                var info =
+                    await _localKeychainSettings.GetMacDesktopConnectionInfoAsync();
+                _input.Username = info.Username;
+                _originalUsername = info.Username;
+                _input.BaseUrl = info.BaseUrl;
+                _isConfigured = info.IsConfigured;
+
+                if (_isConfigured)
+                {
+                    var identity =
+                        await _localKeychainSettings.GetMacDesktopIdentityAsync(
+                            info.Username);
+
+                    if (!string.Equals(
+                            identity.Username,
+                            info.Username,
+                            StringComparison.Ordinal))
+                    {
+                        _detectedUsername = identity.Username;
+                        _input.Username = identity.Username;
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                _message = GetMacDesktopUserMessage(
+                    exception,
+                    "Die MacDesktop-Verbindungsdaten konnten nicht sicher gelesen werden.",
+                    "MacDesktop-Verbindungsdaten lesen");
+            }
+        }
+
+        _isLoading = false;
+    }
 
     private async Task PrepareAsync()
     {
         _message = null;
+
+        if (_isMacDesktop)
+        {
+            await PrepareMacDesktopAsync();
+            return;
+        }
 
         if (string.IsNullOrWhiteSpace(_input.Token) ||
             string.IsNullOrWhiteSpace(_input.Confirmation))
@@ -151,9 +288,74 @@
         }
     }
 
-    private async Task SaveAsync()
+    private async Task PrepareMacDesktopAsync()
     {
-        if (_preparedToken is null)
+        if (_localKeychainSettings is null)
+        {
+            _message = "Die MacDesktop-Schlüsselbundverwaltung ist nicht verfügbar.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_input.BaseUrl) ||
+            string.IsNullOrWhiteSpace(_input.Username))
+        {
+            _message = "Bitte geben Sie Paperless-Basisadresse und Paperless-Benutzernamen vollständig ein.";
+            return;
+        }
+
+        var tokenWasEntered =
+            !string.IsNullOrWhiteSpace(_input.Token) ||
+            !string.IsNullOrWhiteSpace(_input.Confirmation);
+
+        if (!_isConfigured || tokenWasEntered)
+        {
+            if (string.IsNullOrWhiteSpace(_input.Token) ||
+                string.IsNullOrWhiteSpace(_input.Confirmation))
+            {
+                ClearInput();
+                _message = "Bitte geben Sie das API-Token zweimal vollständig ein.";
+                return;
+            }
+
+            if (!string.Equals(
+                    _input.Token,
+                    _input.Confirmation,
+                    StringComparison.Ordinal))
+            {
+                ClearInput();
+                _message = "Die beiden Token-Eingaben stimmen nicht überein.";
+                return;
+            }
+        }
+
+        _isBusy = true;
+
+        try
+        {
+            _preparedMacDesktopConnection =
+                await _localKeychainSettings.PrepareMacDesktopConnectionAsync(
+                    _input.Username,
+                    _input.BaseUrl,
+                    tokenWasEntered ? _input.Token : null);
+        }
+        catch (Exception exception)
+        {
+            _message = GetMacDesktopUserMessage(
+                exception,
+                "Die eingegebene Paperless-Verbindung konnte nicht bestätigt werden.",
+                "MacDesktop-Paperless-Verbindung prüfen");
+        }
+        finally
+        {
+            ClearInput();
+            _isBusy = false;
+        }
+    }
+
+    private async Task ConfirmDetectedUsernameChangeAsync()
+    {
+        if (_localKeychainSettings is null ||
+            _detectedUsername is null)
         {
             return;
         }
@@ -163,7 +365,78 @@
 
         try
         {
-            await TokenStore.SavePreparedAsync(_preparedToken);
+            var prepared =
+                await _localKeychainSettings.PrepareMacDesktopConnectionAsync(
+                    _detectedUsername,
+                    _input.BaseUrl,
+                    token: null);
+
+            await _localKeychainSettings.SavePreparedMacDesktopConnectionAsync(
+                prepared);
+
+            var username = _detectedUsername;
+            _detectedUsername = null;
+            Navigation.NavigateTo(
+                $"/local-auth/macdesktop-refresh?username={Uri.EscapeDataString(username)}",
+                forceLoad: true);
+        }
+        catch (Exception exception)
+        {
+            _message = GetMacDesktopUserMessage(
+                exception,
+                "Die erkannte Paperless-Benutzernamensänderung konnte nicht sicher übernommen werden.",
+                "MacDesktop-Benutzernamensänderung bestätigen");
+        }
+        finally
+        {
+            _isBusy = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        var preparedToken = _preparedToken;
+
+        if (!_isMacDesktop)
+        {
+            if (preparedToken is null)
+            {
+                return;
+            }
+        }
+        else if (_preparedMacDesktopConnection is null)
+        {
+            return;
+        }
+
+        _message = null;
+        _isBusy = true;
+
+        try
+        {
+            if (_isMacDesktop)
+            {
+                if (_localKeychainSettings is null ||
+                    _preparedMacDesktopConnection is null)
+                {
+                    throw new InvalidOperationException(
+                        "Die vorbereitete MacDesktop-Verbindung ist nicht verfügbar.");
+                }
+
+                await _localKeychainSettings.SavePreparedMacDesktopConnectionAsync(
+                    _preparedMacDesktopConnection);
+                _preparedMacDesktopConnection = null;
+
+                var username =
+                    LocalKeychainPaperlessSettings.NormalizeMacDesktopUsername(
+                        _input.Username);
+                Navigation.NavigateTo(
+                    $"/local-auth/macdesktop-refresh?username={Uri.EscapeDataString(username)}",
+                    forceLoad: true);
+                return;
+            }
+
+            await TokenStore.SavePreparedAsync(preparedToken!);
             _preparedToken = null;
             Navigation.NavigateTo("/", forceLoad: true);
         }
@@ -183,6 +456,44 @@
         }
     }
 
+    private string GetMacDesktopUserMessage(
+        Exception exception,
+        string fallbackMessage,
+        string action)
+    {
+        if (exception is InvalidOperationException invalidOperationException &&
+            (string.Equals(
+                 invalidOperationException.Message,
+                 PaperlessApiClient.UiSettingsPermissionMessage,
+                 StringComparison.Ordinal) ||
+             string.Equals(
+                 invalidOperationException.Message,
+                 LocalKeychainPaperlessSettings.UsernameTokenMismatchMessage,
+                 StringComparison.Ordinal) ||
+             string.Equals(
+                 invalidOperationException.Message,
+                 LocalKeychainPaperlessSettings.PaperlessUserIdMismatchMessage,
+                 StringComparison.Ordinal)))
+        {
+            var controlledError = PaperlessErrorClassifier.Classify(
+                exception,
+                fallbackMessage: fallbackMessage);
+            LogFailure(action, controlledError);
+            return invalidOperationException.Message;
+        }
+
+        var error = PaperlessErrorClassifier.Classify(
+            exception,
+            fallbackMessage: fallbackMessage);
+
+        if (!error.IsControlledCancellation)
+        {
+            LogFailure(action, error);
+        }
+
+        return error.UserMessage;
+    }
+
     private void LogFailure(string action, PaperlessErrorInfo error)
     {
         Logger.LogError(
@@ -198,6 +509,7 @@
     private void CancelPrepared()
     {
         _preparedToken = null;
+        _preparedMacDesktopConnection = null;
         _message = null;
         ClearInput();
     }
@@ -210,6 +522,8 @@
 
     private sealed class TokenInputModel
     {
+        public string BaseUrl { get; set; } = string.Empty;
+        public string Username { get; set; } = string.Empty;
         public string Token { get; set; } = string.Empty;
         public string Confirmation { get; set; } = string.Empty;
     }

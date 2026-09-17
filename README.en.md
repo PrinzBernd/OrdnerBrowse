@@ -51,7 +51,7 @@ All access to documents and functional data in paperless-ngx is read-only.
 
 ## Quick start
 
-OrdnerBrowse runs as a containerised application. Setup requires Docker Compose, a reachable paperless-ngx instance, and a configured OIDC sign-in.
+OrdnerBrowse can be run as a containerised application. `v09.92.0` additionally provides a native macOS test version. Container setup requires Docker Compose, a reachable paperless-ngx instance, and a configured OIDC sign-in.
 
 The complete step-by-step guide is available in the
 [container-operation documentation](Containerbetrieb/README_CONTAINERBETRIEB.md).
@@ -115,6 +115,16 @@ General configuration documentation is provided in:
 The concrete runtime and container parameters are documented in detail in:
 
 [container-operation documentation](Containerbetrieb/README_CONTAINERBETRIEB.md)
+
+## macOS test version
+
+In addition to the container artifacts, `v09.92.0` provides a native macOS test version of OrdnerBrowse.
+
+The application is currently **not signed with an Apple Developer ID and is not notarized by Apple**. macOS may therefore block the application on first launch for security reasons.
+
+After explicitly allowing the application under **System Settings → Privacy & Security**, it can still be opened and used as a test version.
+
+The macOS version uses the same OrdnerBrowse application and remains read-only towards paperless-ngx.
 
 ## Security
 

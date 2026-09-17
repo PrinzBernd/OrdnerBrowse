@@ -174,7 +174,16 @@ var tests = new (string Name, Func<Task> Execute)[]
     ("PDF.js-Renderer berücksichtigt HiDPI-Ausgabe", TestQuickLookPdfHiDpiAsync),
     ("PDF.js-Renderer erhält die relative Scrollposition", TestQuickLookPdfScrollPositionAsync),
     ("Lokale PDF.js-Dateien und Lizenznachweis sind vorhanden", TestLocalPdfJsAssetsAsync),
-    ("Versionsschema lautet v09.91.2 und .NET 0.9.91", TestApplicationDisplayVersionAsync),
+    ("Runtimeprofile verwenden die bereinigten zentralen Bezeichnungen", TestRuntimeProfileNamesAsync),
+    ("MacDesktop wird als eigene Runtime-Betriebsform angezeigt", TestApplicationDisplayMacDesktopAsync),
+    ("Development hat in der Statusanzeige Vorrang vor MacDesktop", TestApplicationDisplayDevelopmentPrecedenceAsync),
+    ("MacDesktop kann den explizit aktivierten lokalen Mehrbenutzerbetrieb verwenden", TestMacDesktopLocalMultiUserActivationAsync),
+    ("Bestehender lokaler Benutzerfluss bleibt Keychain-Prüfung vor Sitzungsanmeldung", TestConfiguredLocalUserLoginFlowAsync),
+    ("MacDesktop bindet Benutzername, Paperless-ID und Token im dreistufigen Keychain-Modell", TestMacDesktopUsernameKeychainAccountAsync),
+    ("MacDesktop Erstprovisionierung ermittelt Identität read-only über UISettings", TestMacDesktopFirstProvisioningAsync),
+    ("MacDesktop Benutzernamensänderung lässt den ID-gebundenen Token unverändert", TestMacDesktopUsernameMigrationAsync),
+    ("Development-Testzuordnung bleibt von MacDesktop unverändert getrennt", TestMacDesktopDevelopmentSeparationAsync),
+    ("Versionsschema lautet v09.92.0 und .NET 0.9.92", TestApplicationDisplayVersionAsync),
     ("Zentraler Navigationsabgleich bleibt von transientem Circuit-Disconnect entkoppelt", TestCentralNavigationSessionAvailabilityAsync),
     ("Display-Präfixe sind für vier Explorer-Bereiche getrennt konfigurierbar", TestDisplayPrefixesFourAreasAsync),
     ("Display-Präfixe entfernen exakt nur den längsten passenden Anfang", TestDisplayPrefixesLongestExactPrefixAsync),
@@ -625,6 +634,7 @@ static async Task TestPaperlessApiClientReadOnlySurfaceAsync()
     {
         "GetAllDocumentsAsync",
         "GetCorrespondentsAsync",
+        "GetCurrentUserIdentityAsync",
         "GetCustomFieldsAsync",
         "GetDocumentAsync",
         "GetDocumentPreviewAsync",
@@ -709,6 +719,9 @@ static async Task TestPaperlessReadEndpointContractAsync()
     AssertCapturedRequest(
         handler,
         "/api/status/?format=json");
+    AssertCapturedRequest(
+        handler,
+        "/api/ui_settings/");
     AssertCapturedRequest(
         handler,
         "/api/documents/?page_size=1&fields=id");
@@ -896,6 +909,7 @@ static async Task ExercisePaperlessReadSurfaceAsync(
     PaperlessApiClient client)
 {
     await client.ValidateCurrentTokenAsync();
+    _ = await client.GetCurrentUserIdentityAsync();
     _ = await client.GetSystemStatusAsync();
     _ = await client.GetCorrespondentsAsync();
     _ = await client.GetDocumentTypesAsync();
@@ -1269,10 +1283,10 @@ static Task TestPaperlessConnectionDoubleEntryAsync()
 
     Assert(
         saveBlock.Contains(
-            "if (_preparedToken is null)",
+            "if (preparedToken is null)",
             StringComparison.Ordinal) &&
         saveBlock.Contains(
-            "TokenStore.SavePreparedAsync(_preparedToken)",
+            "TokenStore.SavePreparedAsync(preparedToken!)",
             StringComparison.Ordinal),
         "Vorbereiten und verbindliches Speichern des Tokens sind nicht mehr zwei getrennte Schritte.");
 
@@ -5729,26 +5743,399 @@ static Task TestLocalPdfJsAssetsAsync()
     return Task.CompletedTask;
 }
 
+static Task TestRuntimeProfileNamesAsync()
+{
+    var runtimeProfile = ReadProjectSource("WebUI.Web/Services/RuntimeProfile.cs");
+    var program = ReadProjectSource("WebUI.Web/Program.cs");
+    var displayInfo = ReadProjectSource("WebUI.Web/Services/ApplicationDisplayInfo.cs");
+
+    Assert(
+        RuntimeProfile.MacDesktop == "MacDesktop" &&
+        RuntimeProfile.Arm64Reference == "Arm64Reference" &&
+        RuntimeProfile.Amd64Reference == "Amd64Reference",
+        "Die zentralen Runtimeprofilwerte entsprechen nicht den festgelegten Bezeichnungen.");
+
+    Assert(
+        runtimeProfile.Contains("public const string MacDesktop = \"MacDesktop\";", StringComparison.Ordinal) &&
+        runtimeProfile.Contains("public const string Arm64Reference = \"Arm64Reference\";", StringComparison.Ordinal) &&
+        runtimeProfile.Contains("public const string Amd64Reference = \"Amd64Reference\";", StringComparison.Ordinal) &&
+        !program.Contains("\"ProfileB\"", StringComparison.Ordinal) &&
+        !program.Contains("\"DiskStationTest\"", StringComparison.Ordinal) &&
+        !displayInfo.Contains("DiskStationTestProfileName", StringComparison.Ordinal),
+        "Alte oder dezentrale Runtimeprofilbezeichnungen sind noch vorhanden.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestApplicationDisplayMacDesktopAsync()
+{
+    ApplicationDisplayInfo.Configure(
+        isDevelopment: false,
+        isMacDesktop: true,
+        isArm64Reference: false,
+        isAmd64Reference: false);
+
+    Assert(
+        ApplicationDisplayInfo.StatusText == "Mac-Desktop",
+        "MacDesktop wird nicht als eigene Runtime-Betriebsform angezeigt.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestApplicationDisplayDevelopmentPrecedenceAsync()
+{
+    ApplicationDisplayInfo.Configure(
+        isDevelopment: true,
+        isMacDesktop: true,
+        isArm64Reference: false,
+        isAmd64Reference: false);
+
+    Assert(
+        ApplicationDisplayInfo.StatusText == "Entwicklungsumgebung",
+        "Development hat in der Statusanzeige nicht den festgelegten Vorrang vor MacDesktop.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestMacDesktopLocalMultiUserActivationAsync()
+{
+    var settingsSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalTestUserSettings.cs");
+    var programSource = ReadProjectSource(
+        "WebUI.Web/Program.cs");
+    var factorySource = ReadProjectSource(
+        "WebUI.Web/Services/PaperlessClientFactory.cs");
+
+    Assert(
+        settingsSource.Contains(
+            "bool oidcEnabled,\n        bool isMacDesktop",
+            StringComparison.Ordinal) &&
+        settingsSource.Contains(
+            "(environment.IsDevelopment() || isMacDesktop)",
+            StringComparison.Ordinal) &&
+        settingsSource.Contains(
+            "!oidcEnabled",
+            StringComparison.Ordinal) &&
+        settingsSource.Contains(
+            "configuration.GetValue<bool>(\"LocalMultiUser:Enabled\")",
+            StringComparison.Ordinal),
+        "MacDesktop ist nicht minimalinvasiv an den explizit geschalteten lokalen Mehrbenutzerbetrieb angebunden.");
+
+    Assert(
+        programSource.Contains(
+            "oidcSettings.Enabled,\n        isMacDesktop);",
+            StringComparison.Ordinal),
+        "Program.cs reicht das zentrale MacDesktop-Runtimeprofil nicht an die lokale Betriebsart weiter.");
+
+    Assert(
+        factorySource.Contains(
+            "RuntimeProfile.MacDesktop",
+            StringComparison.Ordinal) &&
+        factorySource.Contains(
+            "oidcSettings.Enabled,\n            isMacDesktop);",
+            StringComparison.Ordinal),
+        "PaperlessClientFactory berücksichtigt MacDesktop nicht bei der bestehenden lokalen Betriebsart.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestConfiguredLocalUserLoginFlowAsync()
+{
+    var loginSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalDevelopmentAuthenticationEndpoints.cs");
+
+    var endpointStartIndex = loginSource.IndexOf(
+        "\"/local-auth/login/{alias}\"",
+        StringComparison.Ordinal);
+    var endpointEndIndex = loginSource.IndexOf(
+        "app.MapPost(",
+        endpointStartIndex >= 0 ? endpointStartIndex : 0,
+        StringComparison.Ordinal);
+
+    Assert(
+        endpointStartIndex >= 0 &&
+        endpointEndIndex > endpointStartIndex,
+        "Der bestehende Development-Anmeldeendpunkt /local-auth/login/{alias} konnte nicht eindeutig isoliert werden.");
+
+    var developmentLoginBlock = loginSource[
+        endpointStartIndex..endpointEndIndex];
+
+    var baseUrlIndex = developmentLoginBlock.IndexOf(
+        "GetBaseUrlAsync(",
+        StringComparison.Ordinal);
+    var credentialIndex = developmentLoginBlock.IndexOf(
+        "GetCredentialAsync(",
+        StringComparison.Ordinal);
+    var validationIndex = developmentLoginBlock.IndexOf(
+        "ValidateCurrentTokenAsync(",
+        StringComparison.Ordinal);
+    var signInIndex = developmentLoginBlock.IndexOf(
+        "SignInAsync(",
+        StringComparison.Ordinal);
+
+    Assert(
+        baseUrlIndex >= 0 &&
+        credentialIndex > baseUrlIndex &&
+        validationIndex > credentialIndex &&
+        signInIndex > validationIndex,
+        "Der bestehende Development-Benutzerfluss führt Keychain-Lesen, read-only Tokenvalidierung und Sitzungsanmeldung nicht mehr in der festgelegten Reihenfolge aus.");
+
+    Assert(
+        !developmentLoginBlock.Contains(
+            "SavePreparedAsync(",
+            StringComparison.Ordinal),
+        "Der normale Development-Anmeldeweg darf keine Erstprovisionierung oder Token-Schreiboperation auslösen.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestMacDesktopUsernameKeychainAccountAsync()
+{
+    var keychainSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalKeychainPaperlessSettings.cs");
+    var providerSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalTestUserKeychainTokenProvider.cs");
+
+    Assert(
+        keychainSource.Contains(
+            "webui.macdesktop.paperless-base-url",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "BaseUrlAccount",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui.macdesktop.paperless-user-id",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "GetTokenAccount(binding.PaperlessUserId!.Value)",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui.macdesktop.paperless-token-fingerprint",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "CreateMacDesktopTechnicalUserKey(snapshot.PaperlessUserId!.Value)",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui/macdesktop-paperless-user-id/{paperlessUserId}",
+            StringComparison.Ordinal) &&
+        providerSource.Contains(
+            "GetMacDesktopCredentialAsync(",
+            StringComparison.Ordinal),
+        "MacDesktop verwendet nicht das festgelegte dreistufige ID-basierte Keychain-Modell.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestMacDesktopFirstProvisioningAsync()
+{
+    var apiSource = ReadProjectSource(
+        "WebUI.Infrastructure/PaperlessApiClient.cs");
+    var keychainSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalKeychainPaperlessSettings.cs");
+    var pageSource = ReadProjectSource(
+        "WebUI.Web/Components/Pages/PaperlessConnection.razor");
+
+    var identityMethodStart = apiSource.IndexOf(
+        "GetCurrentUserIdentityAsync(",
+        StringComparison.Ordinal);
+    var identityMethodEnd = apiSource.IndexOf(
+        "private async Task<T> MeasureApiAsync<T>(",
+        identityMethodStart >= 0 ? identityMethodStart : 0,
+        StringComparison.Ordinal);
+
+    Assert(
+        identityMethodStart >= 0 &&
+        identityMethodEnd > identityMethodStart,
+        "Die read-only Paperless-Identitätsabfrage konnte nicht eindeutig isoliert werden.");
+
+    var identityMethod = apiSource[
+        identityMethodStart..identityMethodEnd];
+
+    Assert(
+        identityMethod.Contains(
+            "HttpMethod.Get",
+            StringComparison.Ordinal) &&
+        identityMethod.Contains(
+            "\"/api/ui_settings/\"",
+            StringComparison.Ordinal) &&
+        identityMethod.Contains(
+            "TryGetProperty(\"id\"",
+            StringComparison.Ordinal) &&
+        identityMethod.Contains(
+            "TryGetProperty(\"username\"",
+            StringComparison.Ordinal) &&
+        !identityMethod.Contains(
+            "HttpMethod.Post",
+            StringComparison.Ordinal) &&
+        !identityMethod.Contains(
+            "HttpMethod.Put",
+            StringComparison.Ordinal) &&
+        !identityMethod.Contains(
+            "HttpMethod.Patch",
+            StringComparison.Ordinal) &&
+        !identityMethod.Contains(
+            "HttpMethod.Delete",
+            StringComparison.Ordinal),
+        "Die MacDesktop-Identität wird nicht ausschließlich read-only über /api/ui_settings/ ermittelt.");
+
+    Assert(
+        apiSource.Contains(
+            "Keine Berechtigung für UISettings, bitte an den Administrator wenden.",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "UsernameTokenMismatchMessage",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "identity.Id != currentSnapshot.PaperlessUserId",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "MacDesktopPaperlessUserIdService",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "GetTokenAccount(payload.PaperlessUserId)",
+            StringComparison.Ordinal),
+        "Erstprovisionierung prüft Benutzername, Paperless-ID und UISettings-Berechtigung nicht vor der ID-basierten Ablage.");
+
+    Assert(
+        pageSource.Contains(
+            "Paperless-Basisadresse",
+            StringComparison.Ordinal) &&
+        pageSource.Contains(
+            "Paperless-Benutzername",
+            StringComparison.Ordinal) &&
+        pageSource.Contains(
+            "API-Token wiederholen",
+            StringComparison.Ordinal) &&
+        pageSource.Contains(
+            "PrepareMacDesktopConnectionAsync(",
+            StringComparison.Ordinal),
+        "Die MacDesktop-Ersteinrichtung fordert nicht Basisadresse, Benutzername und doppelte Token-Eingabe kontrolliert an.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestMacDesktopUsernameMigrationAsync()
+{
+    var keychainSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalKeychainPaperlessSettings.cs");
+    var loginSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalDevelopmentAuthenticationEndpoints.cs");
+    var pageSource = ReadProjectSource(
+        "WebUI.Web/Components/Pages/PaperlessConnection.razor");
+
+    var saveStart = keychainSource.IndexOf(
+        "SavePreparedMacDesktopConnectionAsync(",
+        StringComparison.Ordinal);
+    var saveEnd = keychainSource.IndexOf(
+        "public static string NormalizeMacDesktopUsername(",
+        saveStart >= 0 ? saveStart : 0,
+        StringComparison.Ordinal);
+
+    Assert(
+        saveStart >= 0 &&
+        saveEnd > saveStart,
+        "Der MacDesktop-Speicherpfad konnte nicht eindeutig isoliert werden.");
+
+    var saveBlock = keychainSource[saveStart..saveEnd];
+    var verifyIndex = saveBlock.IndexOf(
+        "ValidateMacDesktopSavedStateAsync(",
+        StringComparison.Ordinal);
+    var deleteOldIndex = saveBlock.IndexOf(
+        "DeleteMacDesktopUserBinding(payload.CurrentUsername)",
+        StringComparison.Ordinal);
+    var rollbackIndex = saveBlock.IndexOf(
+        "RestoreMacDesktopUserBinding(",
+        StringComparison.Ordinal);
+
+    Assert(
+        saveBlock.Contains(
+            "MacDesktopPaperlessUserIdService",
+            StringComparison.Ordinal) &&
+        saveBlock.Contains(
+            "GetTokenAccount(payload.PaperlessUserId)",
+            StringComparison.Ordinal) &&
+        saveBlock.Contains(
+            "if (!string.Equals(\n                    previousToken,\n                    payload.Token",
+            StringComparison.Ordinal) &&
+        verifyIndex >= 0 &&
+        deleteOldIndex > verifyIndex &&
+        rollbackIndex > deleteOldIndex,
+        "Die Benutzernamensänderung trennt lokale Namensbindung, ID-Token und Rückfallpfad nicht korrekt.");
+
+    Assert(
+        pageSource.Contains(
+            "Der Paperless-Benutzername wurde geändert. Der Benutzername wird auf",
+            StringComparison.Ordinal) &&
+        pageSource.Contains(
+            "ConfirmDetectedUsernameChangeAsync",
+            StringComparison.Ordinal) &&
+        pageSource.Contains(
+            "@(_isBusy ? \"Wird geändert …\" : \"OK\")",
+            StringComparison.Ordinal) &&
+        loginSource.Contains(
+            "identity.Username",
+            StringComparison.Ordinal) &&
+        loginSource.Contains(
+            "\"/auth/paperless-connection\"",
+            StringComparison.Ordinal),
+        "Eine in Paperless erkannte Benutzernamensänderung wird nicht kontrolliert zur Bestätigung in der WebUI geführt.");
+
+    return Task.CompletedTask;
+}
+
+static Task TestMacDesktopDevelopmentSeparationAsync()
+{
+    var keychainSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalKeychainPaperlessSettings.cs");
+    var loginSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalDevelopmentAuthenticationEndpoints.cs");
+    var settingsSource = ReadProjectSource(
+        "WebUI.Web/Services/LocalTestUserSettings.cs");
+
+    Assert(
+        keychainSource.Contains(
+            "webui.local.paperless-user-id",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui.local.paperless-api-token",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui.macdesktop.paperless-user-id",
+            StringComparison.Ordinal) &&
+        keychainSource.Contains(
+            "webui.macdesktop.paperless-api-token",
+            StringComparison.Ordinal) &&
+        loginSource.Contains(
+            "LocalTestUserSettings.TryGetUser(alias, out var localUser)",
+            StringComparison.Ordinal) &&
+        settingsSource.Contains(
+            "LocalTestUserDefinition",
+            StringComparison.Ordinal),
+        "Die bestehende Development-Testzuordnung wurde nicht sauber vom MacDesktop-Keychainmodell getrennt erhalten.");
+
+    return Task.CompletedTask;
+}
+
 static Task TestApplicationDisplayVersionAsync()
 {
     var source = ReadProjectSource("WebUI.Web/Services/ApplicationDisplayInfo.cs");
     var buildProps = ReadProjectSource("Directory.Build.props");
 
     Assert(
-        ApplicationDisplayInfo.FullVersion == "v09.91.2" &&
-        source.Contains("public const string Version = \"09.91.2\";", StringComparison.Ordinal) &&
+        ApplicationDisplayInfo.FullVersion == "v09.92.0" &&
+        source.Contains("public const string Version = \"09.92.0\";", StringComparison.Ordinal) &&
         source.Contains("public const string PreRelease = \"\";", StringComparison.Ordinal) &&
         source.Contains("PreRelease.Length == 0", StringComparison.Ordinal) &&
         !source.Contains("public const string Revision =", StringComparison.Ordinal),
-        "Die sichtbare Anwendungsversion entspricht nicht dem Schema v09.91.2 / optional -rc.N.");
+        "Die sichtbare Anwendungsversion entspricht nicht dem Schema v09.92.0 / optional -rc.N.");
 
     Assert(
-        buildProps.Contains("<Version>0.9.91</Version>", StringComparison.Ordinal) &&
-        buildProps.Contains("<AssemblyVersion>0.9.91.0</AssemblyVersion>", StringComparison.Ordinal) &&
-        buildProps.Contains("<FileVersion>0.9.91.0</FileVersion>", StringComparison.Ordinal) &&
-        buildProps.Contains("<InformationalVersion>v09.91.2</InformationalVersion>", StringComparison.Ordinal) &&
+        buildProps.Contains("<Version>0.9.92</Version>", StringComparison.Ordinal) &&
+        buildProps.Contains("<AssemblyVersion>0.9.92.0</AssemblyVersion>", StringComparison.Ordinal) &&
+        buildProps.Contains("<FileVersion>0.9.92.0</FileVersion>", StringComparison.Ordinal) &&
+        buildProps.Contains("<InformationalVersion>v09.92.0</InformationalVersion>", StringComparison.Ordinal) &&
         buildProps.Contains("<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>", StringComparison.Ordinal),
-        "Die zentralen .NET-Versionsmetadaten entsprechen nicht v09.91.2 / 0.9.91.");
+        "Die zentralen .NET-Versionsmetadaten entsprechen nicht v09.92.0 / 0.9.92.");
 
     return Task.CompletedTask;
 }
@@ -6468,7 +6855,17 @@ file sealed class PaperlessReadCaptureHandler : HttpMessageHandler
 
         HttpContent content;
 
-        if (requestUri.AbsolutePath.EndsWith(
+        if (string.Equals(
+                requestUri.AbsolutePath,
+                "/api/ui_settings/",
+                StringComparison.Ordinal))
+        {
+            content = new StringContent(
+                "{\"user\":{\"id\":7,\"username\":\"synthetic-user\"}}",
+                System.Text.Encoding.UTF8,
+                "application/json");
+        }
+        else if (requestUri.AbsolutePath.EndsWith(
                 "/thumb/",
                 StringComparison.Ordinal))
         {

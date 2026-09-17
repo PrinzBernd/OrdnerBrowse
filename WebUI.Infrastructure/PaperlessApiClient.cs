@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Threading.Channels;
 using System.Net.Http.Json;
@@ -7,8 +8,15 @@ using System.Text.Json.Serialization;
 
 namespace WebUI.Infrastructure;
 
+public sealed record PaperlessCurrentUserIdentity(
+    int Id,
+    string Username);
+
 public sealed class PaperlessApiClient
 {
+    public const string UiSettingsPermissionMessage =
+        "Keine Berechtigung für UISettings, bitte an den Administrator wenden.";
+
     private const int NavigationPageSize = 1000;
 
     private readonly HttpClient _httpClient;
@@ -70,6 +78,60 @@ public sealed class PaperlessApiClient
             cancellationToken);
 
         response.EnsureSuccessStatusCode();
+    }
+
+    public async Task<PaperlessCurrentUserIdentity> GetCurrentUserIdentityAsync(
+        CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "/api/ui_settings/");
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.Forbidden)
+        {
+            throw new InvalidOperationException(
+                UiSettingsPermissionMessage);
+        }
+
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(
+            cancellationToken);
+        using var document = await JsonDocument.ParseAsync(
+            stream,
+            cancellationToken: cancellationToken);
+
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("user", out var user) ||
+            user.ValueKind != JsonValueKind.Object ||
+            !user.TryGetProperty("id", out var idElement) ||
+            !idElement.TryGetInt32(out var id) ||
+            id <= 0 ||
+            !user.TryGetProperty("username", out var usernameElement) ||
+            usernameElement.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException(
+                "Paperless hat für die aktuelle Anmeldung keine eindeutige Benutzeridentität geliefert.");
+        }
+
+        var username = usernameElement.GetString()?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(username) ||
+            username.Contains('\r') ||
+            username.Contains('\n') ||
+            username.Length > 256)
+        {
+            throw new InvalidOperationException(
+                "Paperless hat für die aktuelle Anmeldung keinen gültigen Benutzernamen geliefert.");
+        }
+
+        return new PaperlessCurrentUserIdentity(
+            id,
+            username);
     }
 
     private async Task<T> MeasureApiAsync<T>(

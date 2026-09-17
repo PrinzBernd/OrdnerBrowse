@@ -43,10 +43,20 @@ public sealed class PaperlessClientFactory
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _localKeychainSettings = localKeychainSettings;
+
+        var runtimeProfile =
+            configuration["WebUi:RuntimeProfile"]?.Trim();
+        var isMacDesktop =
+            string.Equals(
+                runtimeProfile,
+                RuntimeProfile.MacDesktop,
+                StringComparison.Ordinal);
+
         _localMultiUserEnabled = LocalTestUserSettings.IsEnabled(
             environment,
             configuration,
-            oidcSettings.Enabled);
+            oidcSettings.Enabled,
+            isMacDesktop);
     }
 
     public async Task<PaperlessClientContext> CreateContextAsync(
